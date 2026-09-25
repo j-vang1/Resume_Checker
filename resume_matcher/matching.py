@@ -3,6 +3,10 @@
 Both JDs and resumes often lead bullets with stock verbs ("Demonstrate",
 "Review", "Responsible for", "Led", …). Matching reads past those lead-ins
 so similarity is judged on the substance that follows.
+
+Keywords prefer 2–5 word phrases (e.g. "test socket designs", "root cause
+analysis") so matched/missing results show real hiring phrases, not lone
+filler words. Strong skill unigrams (Python, ATE, …) still fill remaining slots.
 """
 
 from __future__ import annotations
@@ -276,14 +280,27 @@ _WEAK_UNIGRAMS = frozenset(
 
 
 def _is_usable_token(token: str) -> bool:
-    """True if a single token can appear as content inside a phrase keyword."""
-    if not token or token in _STOPWORDS or token in _LEAD_IN_WORDS:
+    """True if a single token can appear as content inside a phrase keyword.
+
+    Lead-in verbs are stripped at line starts separately; a small set of
+    noun-like lead-in forms (e.g. "designs") may still appear mid-phrase.
+    """
+    if not token or token in _STOPWORDS:
         return False
     if token in _SHORT_TECH:
         return True
     if len(token) < 3:
         return False
     return True
+
+
+# Lead-in tokens that are also common nouns and OK mid/end of a phrase
+_LEAD_IN_OK_IN_PHRASE = frozenset(
+    """
+    design designs support management process report reports lead drive
+    control controls review reviews build builds
+    """.split()
+)
 
 
 # Words that must not appear inside a phrase keyword (fillers / conjunctions)
@@ -327,12 +344,17 @@ def _is_usable_keyword(term: str) -> bool:
         token = parts[0]
         if not _is_usable_token(token):
             return False
-        if token in _WEAK_UNIGRAMS or token in _PHRASE_BLOCKLIST:
+        # Lone lead-in verbs / weak fillers are not useful keywords
+        if token in _LEAD_IN_WORDS or token in _WEAK_UNIGRAMS or token in _PHRASE_BLOCKLIST:
             return False
         return True
-    # Phrases must be pure content words (no stopwords / lead-ins / blockers)
+    # Phrases: no stopwords / blockers; don't start on a stock lead-in verb
+    if parts[0] in _LEAD_IN_WORDS or parts[0] in _PHRASE_BLOCKLIST:
+        return False
     for p in parts:
-        if p in _LEAD_IN_WORDS or p in _PHRASE_BLOCKLIST or p in _STOPWORDS:
+        if p in _PHRASE_BLOCKLIST or p in _STOPWORDS:
+            return False
+        if p in _LEAD_IN_WORDS and p not in _LEAD_IN_OK_IN_PHRASE:
             return False
         if not _is_usable_token(p):
             return False

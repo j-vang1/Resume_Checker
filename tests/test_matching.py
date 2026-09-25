@@ -108,13 +108,16 @@ def test_extract_keywords_prefers_phrases():
     assert phrase_kws, f"expected multi-word phrases, got: {kws}"
     assert all(2 <= len(kw.split()) <= 5 for kw in phrase_kws)
     blob = " ".join(kws)
-    assert "test socket" in blob or "root cause" in blob or "thermal plunger" in blob
-    # Lead-ins must not appear as keywords
+    assert "root cause analysis" in blob or "thermal plunger" in blob
+    # After stripping "Review and approve", keep the noun phrase intact
+    assert "test socket designs" in kws or any("test socket designs" in kw for kw in kws)
+    # Lead-ins must not appear as bare keywords
     assert "review" not in kws
     assert "demonstrate" not in kws
+    assert "approve" not in kws
 
     resume = """
-    Designed test socket hardware and thermal plunger tools for ATE.
+    Designed test socket designs and thermal plunger hardware for ATE.
     Performed root cause analysis on intermittent ATE failures.
     """
     result = score_resume(job, resume, filename="phrase.pdf", threshold=40)
