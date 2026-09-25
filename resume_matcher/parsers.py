@@ -12,7 +12,7 @@ from pypdf import PdfReader
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc"}
 
 # Fancy layouts often yield very little text — treat below this as a failed extract
-MIN_USEFUL_CHARS = 120
+MIN_USEFUL_CHARS = 80
 
 
 class UnsupportedFileTypeError(ValueError):

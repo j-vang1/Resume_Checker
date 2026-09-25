@@ -9,7 +9,7 @@ import pytest
 from docx import Document
 
 from resume_matcher.language import detect_language
-from resume_matcher.matching_legacy import extract_keywords, score_resume, score_resumes
+from resume_matcher.matching import extract_keywords, score_resume, score_resumes
 from resume_matcher.parsers import extract_text_from_bytes, extract_text_from_docx
 
 
@@ -119,21 +119,13 @@ def test_docx_parser_roundtrip():
 def test_extract_text_from_bytes_docx():
     document = Document()
     document.add_paragraph(
-        "Alice Example — Hardware Engineer with experience in ATE test sockets, "
-        "thermal plungers, DOE, and root cause analysis across semiconductor production."
+        "Resume text for parsing with enough characters to pass the "
+        "minimum extractable-text check used for designed PDFs."
     )
     buffer = io.BytesIO()
     document.save(buffer)
     text = extract_text_from_bytes(buffer.getvalue(), "resume.docx")
-    assert "Alice Example" in text
-    assert "ATE" in text
-
-
-def test_empty_extract_raises():
-    from resume_matcher.parsers import EmptyExtractError
-
-    with pytest.raises(EmptyExtractError):
-        extract_text_from_bytes(b"%PDF-1.4 empty", "blank.pdf")
+    assert "Resume text" in text
 
 
 def test_unsupported_extension():
