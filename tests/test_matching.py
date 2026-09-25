@@ -9,7 +9,7 @@ import pytest
 from docx import Document
 
 from resume_matcher.language import detect_language
-from resume_matcher.matching import extract_keywords, score_resume, score_resumes
+from resume_matcher.matching_legacy import extract_keywords, score_resume, score_resumes
 from resume_matcher.parsers import extract_text_from_bytes, extract_text_from_docx
 
 
