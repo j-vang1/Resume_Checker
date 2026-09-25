@@ -201,14 +201,64 @@ def normalize_for_matching(text: str) -> str:
     return "\n".join(parts)
 
 
+# Short tech acronyms allowed as keywords even if length < 4
+_SHORT_TECH = frozenset(
+    {
+        "c",
+        "c++",
+        "c#",
+        "r",
+        "go",
+        "js",
+        "ts",
+        "aws",
+        "gcp",
+        "sql",
+        "ate",
+        "slt",
+        "doe",
+        "pcb",
+        "ic",
+        "rf",
+        "ml",
+        "ai",
+        "ui",
+        "ux",
+        "qa",
+        "ci",
+        "cd",
+        "os",
+        "hw",
+        "sw",
+        "fa",
+        "npi",
+        "hvm",
+        "dft",
+        "soc",
+        "esi",
+        "esd",
+        "api",
+        "etl",
+        "bi",
+    }
+)
+
+
+def _is_usable_keyword(token: str) -> bool:
+    if not token or token in _STOPWORDS or token in _LEAD_IN_WORDS:
+        return False
+    if token in _SHORT_TECH:
+        return True
+    # Drop tiny fragments that cause false substring hits
+    if len(token) < 3:
+        return False
+    return True
+
+
 def extract_keywords(text: str, top_n: int = 40) -> list[str]:
     """Extract important keywords after stripping stock lead-in verbs."""
     normalized = normalize_for_matching(text)
-    tokens = [
-        t
-        for t in _tokenize(normalized)
-        if t not in _STOPWORDS and t not in _LEAD_IN_WORDS and len(t) > 1
-    ]
+    tokens = [t for t in _tokenize(normalized) if _is_usable_keyword(t)]
     if not tokens:
         return []
 
@@ -224,6 +274,47 @@ def extract_keywords(text: str, top_n: int = 40) -> list[str]:
     return [term for term, _ in scored[:top_n]]
 
 
+def _keyword_in_resume(kw: str, resume_text: str, resume_tokens: set[str]) -> bool:
+    """
+    True only if the keyword appears as a real whole word/token in the resume.
+
+    Avoids false hits like keyword 'ate' matching inside 'evaluate'/'create',
+    or 'test' matching inside 'latest'.
+    """
+    if not kw:
+        return False
+    if kw in resume_tokens:
+        return True
+
+    # Hyphen/slash compounds: "signal-integrity" or token "machine-learning"
+    for token in resume_tokens:
+        if "-" in token or "/" in token or "." in token:
+            parts = re.split(r"[-/.]", token)
+            if kw in parts:
+                return True
+
+    # Whole-word search in original text (handles plurals lightly via boundary)
+    pattern = re.compile(rf"(?i)(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])")
+    if pattern.search(resume_text or ""):
+        return True
+
+    # Simple plural: keyword "socket" vs resume "sockets"
+    if not kw.endswith("s"):
+        plural = kw + "s"
+        if plural in resume_tokens:
+            return True
+        if re.compile(rf"(?i)(?<![a-z0-9]){re.escape(plural)}(?![a-z0-9])").search(
+            resume_text or ""
+        ):
+            return True
+    elif kw.endswith("s") and len(kw) > 3:
+        singular = kw[:-1]
+        if singular in resume_tokens:
+            return True
+
+    return False
+
+
 def _keyword_overlap(
     job_keywords: list[str], resume_text: str
 ) -> tuple[float, list[str], list[str]]:
@@ -231,16 +322,17 @@ def _keyword_overlap(
     if not job_keywords:
         return 0.0, [], []
 
-    # Match against lead-in-stripped resume text so "Demonstrated X" still hits X
-    resume_tokens = set(_tokenize(normalize_for_matching(resume_text)))
-    resume_tokens |= set(_tokenize(resume_text))
+    normalized_resume = normalize_for_matching(resume_text)
+    resume_tokens = set(_tokenize(normalized_resume)) | set(_tokenize(resume_text))
 
     matched: list[str] = []
     missing: list[str] = []
     for kw in job_keywords:
-        if kw in _LEAD_IN_WORDS:
+        if not _is_usable_keyword(kw):
             continue
-        if kw in resume_tokens or any(kw in token for token in resume_tokens):
+        if _keyword_in_resume(kw, resume_text, resume_tokens) or _keyword_in_resume(
+            kw, normalized_resume, resume_tokens
+        ):
             matched.append(kw)
         else:
             missing.append(kw)

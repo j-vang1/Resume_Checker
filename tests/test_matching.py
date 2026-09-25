@@ -91,7 +91,48 @@ def test_strips_lead_in_verbs_for_matching():
     assert "provide" not in kws
 
 
-def test_strong_resume_greenlit_at_50():
+def test_no_false_substring_keyword_matches():
+    """'ate' must not match inside 'evaluate'; 'test' must not match 'latest'."""
+    from resume_matcher.matching import _keyword_overlap, score_resume
+
+    resume = """
+    Experience
+    - Evaluated candidates and created the latest marketing campaigns.
+    - Related state gate analysis for process improvement.
+    """
+    # Force keywords that commonly false-hit via substring
+    overlap, matched, missing = _keyword_overlap(
+        ["ate", "test", "socket", "thermal", "plunger"],
+        resume,
+    )
+    assert "ate" not in matched
+    assert "test" not in matched
+    assert "socket" not in matched
+    assert "thermal" not in matched
+
+    # Real whole-word hits still count
+    resume2 = """
+    - Debugged ATE handler issues and designed test socket hardware.
+    - Thermal plunger characterization using DOE.
+    """
+    _, matched2, _ = _keyword_overlap(
+        ["ate", "test", "socket", "thermal", "plunger", "doe"],
+        resume2,
+    )
+    assert "ate" in matched2
+    assert "socket" in matched2
+    assert "thermal" in matched2
+    assert "plunger" in matched2
+    assert "doe" in matched2
+
+    result = score_resume(
+        "Need ATE test socket and thermal plunger experience.",
+        resume,
+        filename="false.pdf",
+        threshold=50,
+    )
+    assert "ate" not in result.matched_keywords
+    assert "socket" not in result.matched_keywords
     result = score_resume(JOB_EN, RESUME_STRONG, filename="strong.pdf", threshold=50)
     assert result.match_percent >= 50
     assert result.greenlit is True
