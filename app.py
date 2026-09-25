@@ -9,6 +9,7 @@ Run with:
 
 from __future__ import annotations
 
+import html
 import sys
 from pathlib import Path
 
@@ -26,82 +27,108 @@ from resume_matcher.report import MatchReport
 
 _STYLES = """
 <style>
-  .block-container { padding-top: 1.1rem; max-width: 1280px; }
+  .block-container { padding-top: 1rem; max-width: 1400px; }
 
-  /* Force readable dark text on light status cards (fixes white-on-green in dark theme) */
-  .match-card, .match-card * {
+  /* Force readable dark text on light surfaces (dark-theme safe) */
+  .match-card, .match-card *,
+  .tier-card, .tier-card *,
+  .screen-table, .screen-table * {
     color: #0f172a !important;
   }
-  .match-card {
+
+  .tier-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+    margin: 0.5rem 0 1rem 0;
+  }
+  .tier-card {
     border-radius: 12px;
-    padding: 1rem 1.25rem;
-    margin-bottom: 0.85rem;
+    padding: 0.9rem 1rem;
     border: 1px solid #cbd5e1;
   }
-  .match-card.greenlit {
-    background: #dcfce7;
-    border-color: #86efac;
+  .tier-card.good { background: #bbf7d0; border-color: #4ade80; }
+  .tier-card.maybe { background: #fde68a; border-color: #fbbf24; }
+  .tier-card.poor { background: #fecaca; border-color: #f87171; }
+  .tier-card .label {
+    font-size: 0.8rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
   }
-  .match-card.rejected {
-    background: #ffedd5;
-    border-color: #fdba74;
+  .tier-card .count {
+    font-size: 2.1rem; font-weight: 800; line-height: 1.1; margin-top: 0.15rem;
   }
-  .match-card .filename {
-    font-weight: 700;
-    font-size: 1.05rem;
-    color: #0f172a !important;
+  .tier-card .hint { font-size: 0.78rem; color: #334155 !important; margin-top: 0.15rem; }
+
+  .match-card {
+    border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 0.85rem;
+    border: 1px solid #cbd5e1;
   }
-  .match-card .meta {
-    font-size: 0.82rem;
-    color: #334155 !important;
-    margin-top: 0.2rem;
-  }
-  .score-big {
-    font-size: 2rem;
-    font-weight: 800;
-    line-height: 1;
-  }
+  .match-card.greenlit { background: #dcfce7; border-color: #86efac; }
+  .match-card.rejected { background: #ffedd5; border-color: #fdba74; }
+  .match-card .filename { font-weight: 700; font-size: 1.05rem; }
+  .match-card .meta { font-size: 0.82rem; color: #334155 !important; margin-top: 0.2rem; }
+  .score-big { font-size: 2rem; font-weight: 800; line-height: 1; }
   .score-big.green { color: #14532d !important; }
   .score-big.amber { color: #9a3412 !important; }
 
   .pill {
-    display: inline-block;
-    border-radius: 6px;
-    padding: 0.18rem 0.5rem;
-    font-size: 0.78rem;
-    font-weight: 700;
-    margin: 0.15rem 0.25rem 0 0;
+    display: inline-block; border-radius: 6px; padding: 0.18rem 0.5rem;
+    font-size: 0.78rem; font-weight: 700; margin: 0.15rem 0.25rem 0 0;
   }
   .pill.strong { background: #bbf7d0; color: #14532d !important; }
   .pill.moderate { background: #fde68a; color: #78350f !important; }
   .pill.weak { background: #fecaca; color: #7f1d1d !important; }
 
   .lang-badge {
-    display: inline-block;
-    background: #e0f2fe;
-    color: #0c4a6e !important;
-    border-radius: 999px;
-    padding: 0.25rem 0.75rem;
-    font-size: 0.875rem;
-    font-weight: 600;
+    display: inline-block; background: #e0f2fe; color: #0c4a6e !important;
+    border-radius: 999px; padding: 0.25rem 0.75rem; font-size: 0.875rem; font-weight: 600;
   }
-
   .status-chip {
-    display: inline-block;
-    font-weight: 800;
-    font-size: 0.75rem;
-    letter-spacing: 0.03em;
-    padding: 0.2rem 0.55rem;
-    border-radius: 999px;
+    display: inline-block; font-weight: 800; font-size: 0.75rem;
+    letter-spacing: 0.03em; padding: 0.2rem 0.55rem; border-radius: 999px;
   }
-  .status-chip.pass {
-    background: #166534;
-    color: #ffffff !important;
+  .status-chip.pass { background: #166534; color: #ffffff !important; }
+  .status-chip.fail { background: #9a3412; color: #ffffff !important; }
+
+  .screen-wrap {
+    border: 1px solid #cbd5e1; border-radius: 10px; overflow: auto;
+    max-height: 560px; background: #f8fafc;
   }
-  .status-chip.fail {
-    background: #9a3412;
-    color: #ffffff !important;
+  .screen-table {
+    width: 100%; border-collapse: collapse; font-size: 0.9rem;
   }
+  .screen-table th {
+    position: sticky; top: 0; z-index: 1;
+    background: #e2e8f0; text-align: left; padding: 0.55rem 0.65rem;
+    font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;
+    color: #0f172a !important; border-bottom: 1px solid #94a3b8;
+  }
+  .screen-table td {
+    padding: 0.5rem 0.65rem; border-bottom: 1px solid #e2e8f0;
+    vertical-align: middle; color: #0f172a !important;
+  }
+  .screen-table tr.fit-good { background: #dcfce7; }
+  .screen-table tr.fit-maybe { background: #fef9c3; }
+  .screen-table tr.fit-poor { background: #fee2e2; }
+  .screen-table tr:hover { filter: brightness(0.97); }
+  .fit-badge {
+    display: inline-block; min-width: 5.2rem; text-align: center;
+    font-weight: 800; font-size: 0.72rem; letter-spacing: 0.04em;
+    padding: 0.22rem 0.45rem; border-radius: 999px;
+  }
+  .fit-badge.good { background: #166534; color: #fff !important; }
+  .fit-badge.maybe { background: #a16207; color: #fff !important; }
+  .fit-badge.poor { background: #991b1b; color: #fff !important; }
+  .score-cell { font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bar {
+    display: inline-block; height: 8px; width: 72px; background: #cbd5e1;
+    border-radius: 999px; overflow: hidden; vertical-align: middle; margin-left: 0.4rem;
+  }
+  .bar > span { display: block; height: 100%; border-radius: 999px; }
+  .bar.good > span { background: #16a34a; }
+  .bar.maybe > span { background: #ca8a04; }
+  .bar.poor > span { background: #dc2626; }
+  .name-cell { font-weight: 650; max-width: 280px; }
+  .muted { color: #475569 !important; font-size: 0.8rem; }
 </style>
 """
 
@@ -211,12 +238,36 @@ def _bullet_table(report: MatchReport) -> list[dict]:
     ]
 
 
+def _fit_tier(report: MatchReport) -> str:
+    """Return good | maybe | poor for bulk screening."""
+    alignment = report.overall.get("overall_role_alignment", "Weak")
+    if alignment == "Strong" or (report.greenlit and report.composite_score >= 70):
+        return "good"
+    if alignment == "Moderate" or (report.greenlit and report.composite_score >= 50):
+        return "maybe"
+    return "poor"
+
+
+def _fit_label(tier: str) -> str:
+    return {"good": "GOOD FIT", "maybe": "MODERATE", "poor": "POOR FIT"}.get(tier, "POOR FIT")
+
+
+def _top_signal(report: MatchReport) -> str:
+    if report.core_strengths:
+        return _short(report.core_strengths[0], 70)
+    if report.major_gaps:
+        return _short("Gap: " + report.major_gaps[0], 70)
+    return "—"
+
+
 def _leaderboard_rows(reports: list[MatchReport]) -> list[dict]:
     rows = []
     for i, r in enumerate(reports, 1):
+        tier = _fit_tier(r)
         rows.append(
             {
                 "#": i,
+                "Fit": _fit_label(tier),
                 "Status": "GREENLIT" if r.greenlit else "BELOW",
                 "Score": round(r.composite_score, 1),
                 "Candidate": r.filename,
@@ -228,6 +279,7 @@ def _leaderboard_rows(reports: list[MatchReport]) -> list[dict]:
                     "seniority_alignment", r.seniority.get("alignment", "—")
                 ),
                 "ATS": r.overall.get("ats_compatibility", r.ats.get("rating", "—")),
+                "Signal": _top_signal(r),
             }
         )
     return rows
@@ -236,50 +288,127 @@ def _leaderboard_rows(reports: list[MatchReport]) -> list[dict]:
 def _filter_sort_reports(
     reports: list[MatchReport],
     *,
+    fit_filter: str,
     status_filter: str,
-    alignment_filter: str,
+    min_score: float,
+    search: str,
     sort_by: str,
 ) -> list[MatchReport]:
     out = list(reports)
+    q = (search or "").strip().lower()
+
+    if fit_filter == "Good fit only":
+        out = [r for r in out if _fit_tier(r) == "good"]
+    elif fit_filter == "Moderate only":
+        out = [r for r in out if _fit_tier(r) == "maybe"]
+    elif fit_filter == "Poor fit only":
+        out = [r for r in out if _fit_tier(r) == "poor"]
 
     if status_filter == "Greenlit only":
         out = [r for r in out if r.greenlit]
     elif status_filter == "Below threshold only":
         out = [r for r in out if not r.greenlit]
 
-    if alignment_filter != "All alignments":
-        out = [
-            r
-            for r in out
-            if r.overall.get("overall_role_alignment", "") == alignment_filter
-        ]
+    out = [r for r in out if r.composite_score >= min_score]
 
-    reverse = True
+    if q:
+        out = [r for r in out if q in r.filename.lower()]
+
+    tier_order = {"good": 0, "maybe": 1, "poor": 2}
     if sort_by == "Score (low → high)":
-        key = lambda r: r.composite_score
-        reverse = False
+        out.sort(key=lambda r: r.composite_score)
     elif sort_by == "Score (high → low)":
-        key = lambda r: r.composite_score
-        reverse = True
+        out.sort(key=lambda r: r.composite_score, reverse=True)
     elif sort_by == "Name (A → Z)":
-        key = lambda r: r.filename.lower()
-        reverse = False
+        out.sort(key=lambda r: r.filename.lower())
     elif sort_by == "Name (Z → A)":
-        key = lambda r: r.filename.lower()
-        reverse = True
-    elif sort_by == "Overall (Strong first)":
-        order = {"Strong": 0, "Moderate": 1, "Weak": 2}
-        key = lambda r: (
-            order.get(r.overall.get("overall_role_alignment", "Weak"), 9),
-            -r.composite_score,
-        )
-        reverse = False
-    else:
-        key = lambda r: r.composite_score
-        reverse = True
+        out.sort(key=lambda r: r.filename.lower(), reverse=True)
+    elif sort_by == "Fit (good → poor)":
+        out.sort(key=lambda r: (tier_order[_fit_tier(r)], -r.composite_score))
+    else:  # Best first (fit + score)
+        out.sort(key=lambda r: (tier_order[_fit_tier(r)], -r.composite_score))
 
-    out.sort(key=key, reverse=reverse)
     return out
+
+
+def _screening_table_html(reports: list[MatchReport]) -> str:
+    rows_html: list[str] = []
+    for i, r in enumerate(reports, 1):
+        tier = _fit_tier(r)
+        fit = _fit_label(tier)
+        status = "GREENLIT" if r.greenlit else "BELOW"
+        width = max(0, min(100, int(round(r.composite_score))))
+        signal = html.escape(_short(_top_signal(r), 64))
+        name = html.escape(_short(r.filename, 42))
+        core = html.escape(str(r.overall.get("core_requirement_coverage", "—")))
+        depth = html.escape(str(r.overall.get("technical_depth", "—")))
+        rows_html.append(
+            f"""
+            <tr class="fit-{tier}">
+              <td>{i}</td>
+              <td><span class="fit-badge {tier}">{fit}</span></td>
+              <td class="score-cell">{r.composite_score:.0f}
+                <span class="bar {tier}"><span style="width:{width}%"></span></span>
+              </td>
+              <td class="name-cell">{name}</td>
+              <td>{status}</td>
+              <td>{core}</td>
+              <td>{depth}</td>
+              <td class="muted">{signal}</td>
+            </tr>
+            """
+        )
+    body = "\n".join(rows_html) or (
+        '<tr><td colspan="8" class="muted">No candidates in this view.</td></tr>'
+    )
+    return f"""
+    <div class="screen-wrap">
+      <table class="screen-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Fit</th>
+            <th>Score</th>
+            <th>Candidate</th>
+            <th>Gate</th>
+            <th>Core</th>
+            <th>Depth</th>
+            <th>Top signal</th>
+          </tr>
+        </thead>
+        <tbody>
+          {body}
+        </tbody>
+      </table>
+    </div>
+    """
+
+
+def _board_csv(reports: list[MatchReport]) -> str:
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(
+        buf,
+        fieldnames=[
+            "Fit",
+            "Status",
+            "Score",
+            "Candidate",
+            "Overall",
+            "Core",
+            "Depth",
+            "Impact",
+            "Seniority",
+            "ATS",
+            "Signal",
+        ],
+    )
+    writer.writeheader()
+    for row in _leaderboard_rows(reports):
+        writer.writerow({k: row[k] for k in writer.fieldnames})
+    return buf.getvalue()
 
 
 def _render_candidate_header(report: MatchReport) -> None:
@@ -431,56 +560,130 @@ def _render_report_details(report: MatchReport) -> None:
 
 
 def _render_results(reports: list[MatchReport]) -> None:
+    good = [r for r in reports if _fit_tier(r) == "good"]
+    maybe = [r for r in reports if _fit_tier(r) == "maybe"]
+    poor = [r for r in reports if _fit_tier(r) == "poor"]
     greenlit_n = sum(1 for r in reports if r.greenlit)
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Resumes analyzed", len(reports))
-    m2.metric("Greenlit", greenlit_n)
-    m3.metric("Below threshold", len(reports) - greenlit_n)
 
-    st.markdown("### Candidate board")
-    f1, f2, f3 = st.columns([1.1, 1.1, 1.4])
-    with f1:
+    st.markdown(
+        f"""
+        <div class="tier-row">
+          <div class="tier-card good">
+            <div class="label">Good fit</div>
+            <div class="count">{len(good)}</div>
+            <div class="hint">Strong match — prioritize first</div>
+          </div>
+          <div class="tier-card maybe">
+            <div class="label">Moderate</div>
+            <div class="count">{len(maybe)}</div>
+            <div class="hint">Partial match — review carefully</div>
+          </div>
+          <div class="tier-card poor">
+            <div class="label">Poor fit</div>
+            <div class="count">{len(poor)}</div>
+            <div class="hint">Weak evidence — likely pass</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        f"{len(reports)} resumes analyzed · {greenlit_n} greenlit at current threshold · "
+        "Row color = fit tier (green / yellow / red)"
+    )
+
+    st.markdown("### Screening board")
+    c1, c2, c3, c4 = st.columns([1.2, 1.1, 1.1, 1.4])
+    with c1:
+        fit_filter = st.selectbox(
+            "Fit tier",
+            ["All", "Good fit only", "Moderate only", "Poor fit only"],
+            index=0,
+        )
+    with c2:
         status_filter = st.selectbox(
-            "Filter by status",
+            "Greenlight gate",
             ["All", "Greenlit only", "Below threshold only"],
             index=0,
         )
-    with f2:
-        alignment_filter = st.selectbox(
-            "Filter by overall alignment",
-            ["All alignments", "Strong", "Moderate", "Weak"],
-            index=0,
-        )
-    with f3:
+    with c3:
+        min_score = st.slider("Min score", 0, 100, 0, 5)
+    with c4:
         sort_by = st.selectbox(
-            "Sort by",
+            "Sort",
             [
+                "Best first (fit + score)",
+                "Fit (good → poor)",
                 "Score (high → low)",
                 "Score (low → high)",
-                "Overall (Strong first)",
                 "Name (A → Z)",
                 "Name (Z → A)",
             ],
             index=0,
         )
 
+    search = st.text_input("Search candidate filename", placeholder="Type to filter by name…")
+
     filtered = _filter_sort_reports(
         reports,
+        fit_filter=fit_filter,
         status_filter=status_filter,
-        alignment_filter=alignment_filter,
+        min_score=float(min_score),
+        search=search,
         sort_by=sort_by,
     )
+
+    left_meta, right_meta = st.columns([2, 1])
+    with left_meta:
+        st.caption(f"Showing {len(filtered)} of {len(reports)} candidates")
+    with right_meta:
+        st.download_button(
+            "Download board CSV",
+            data=_board_csv(filtered),
+            file_name="resume_screening_board.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
     if not filtered:
         st.warning("No candidates match the current filters.")
         return
 
-    board = _leaderboard_rows(filtered)
-    st.dataframe(board, use_container_width=True, hide_index=True, height=min(420, 52 + 38 * len(board)))
+    # Grouped quick lists for glanceable triage at 100-resume scale
+    view_mode = st.radio(
+        "Board layout",
+        ["Color board (all)", "Grouped by fit"],
+        horizontal=True,
+        index=0,
+    )
 
-    st.markdown("### Candidate detail")
-    options = [f"{r.filename}  ·  {r.composite_score:.0f}  ·  {'GREENLIT' if r.greenlit else 'BELOW'}" for r in filtered]
-    selected_label = st.selectbox("Open candidate", options, index=0)
+    if view_mode == "Grouped by fit":
+        groups = [
+            ("Good fit — review first", "good", [r for r in filtered if _fit_tier(r) == "good"]),
+            ("Moderate — needs judgment", "maybe", [r for r in filtered if _fit_tier(r) == "maybe"]),
+            ("Poor fit — likely pass", "poor", [r for r in filtered if _fit_tier(r) == "poor"]),
+        ]
+        for title, _tier, group in groups:
+            with st.expander(f"{title} ({len(group)})", expanded=bool(group) and _tier != "poor"):
+                if not group:
+                    st.caption("None in this tier.")
+                else:
+                    st.markdown(_screening_table_html(group), unsafe_allow_html=True)
+    else:
+        st.markdown(_screening_table_html(filtered), unsafe_allow_html=True)
+
+    st.markdown("### Open one candidate")
+    options = [
+        f"{_fit_label(_fit_tier(r))} · {r.composite_score:.0f} · {r.filename}"
+        for r in filtered
+    ]
+    # Default to first good fit if present
+    default_idx = 0
+    for i, r in enumerate(filtered):
+        if _fit_tier(r) == "good":
+            default_idx = i
+            break
+    selected_label = st.selectbox("Candidate", options, index=default_idx)
     selected = filtered[options.index(selected_label)]
 
     _render_candidate_header(selected)
