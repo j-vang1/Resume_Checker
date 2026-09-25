@@ -139,7 +139,7 @@ class MatchResult:
 
 
 def _tokenize(text: str) -> list[str]:
-    return [t.lower() for t in _TOKEN_RE.findall(text or "")]
+    return [t.lower().strip(".-") for t in _TOKEN_RE.findall(text or "") if t.lower().strip(".-")]
 
 
 def strip_lead_ins(text: str, max_words: int = 5) -> str:
