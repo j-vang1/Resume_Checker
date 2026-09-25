@@ -17,7 +17,8 @@ from .concepts import (
 _BULLET_RE = re.compile(r"^\s*(?:[-*•●▪◦]|\d+[.)])\s+")
 _SECTION_RE = re.compile(
     r"(?im)^(minimum qualifications|required qualifications|requirements|"
-    r"responsibilities|what you.?ll do|what you will do|about the role|"
+    r"responsibilities|what you.?ll be doing|what you.?ll do|what you will do|"
+    r"what we need to see|about the role|"
     r"preferred qualifications|nice to haves?|bonus|qualifications|"
     r"skills|experience|who you are|must[- ]haves?)\s*:?\s*$"
 )
@@ -63,16 +64,39 @@ def _classify_line(line: str, section: str) -> Importance:
     if _is_generic(line):
         return Importance.GENERIC
 
+    # Section header leftovers should never become requirements
+    if _SECTION_RE.match(line.strip()):
+        return Importance.GENERIC
+
     lower = line.lower()
     section_l = (section or "").lower()
 
-    if any(h in lower for h in PREFERRED_HINTS) or "preferred" in section_l or "nice" in section_l or "bonus" in section_l:
+    # Soft / non-technical logistics
+    if any(
+        p in lower
+        for p in (
+            "weekend support",
+            "on-duty lab",
+            "lift 30",
+            "pounds",
+            "host a meeting",
+            "multi-functional support",
+        )
+    ) and not any(k in lower for k in ("socket", "ate", "slt", "debug", "doe", "thermal")):
+        return Importance.SUPPORTING
+
+    if any(h in lower for h in PREFERRED_HINTS) or "preferred" in section_l or "nice" in section_l or "bonus" in section_l or "strong plus" in lower or "a plus" in lower or "need to see" in section_l:
+        # Years / degree lines in "what we need to see" are still Important if technical
+        if any(k in lower for k in ("ate", "slt", "socket", "thermal", "doe", "debug", "hardware", "ic testing")):
+            if "plus" in lower or "preferred" in lower:
+                return Importance.PREFERRED
+            return Importance.IMPORTANT
         return Importance.PREFERRED
-    if any(h in lower for h in CORE_HINTS) or "required" in section_l or "minimum" in section_l or "responsibilities" in section_l or "what you" in section_l:
+    if any(h in lower for h in CORE_HINTS) or "required" in section_l or "minimum" in section_l or "responsibilities" in section_l or "what you" in section_l or "be doing" in section_l:
         return Importance.CORE
     if any(h in lower for h in IMPORTANT_HINTS) or "qualification" in section_l or "skills" in section_l:
         return Importance.IMPORTANT
-    if "experience" in section_l:
+    if "experience" in section_l or "need to see" in section_l:
         return Importance.IMPORTANT
     # Default: substantive skill lines are Important; short soft skills Supporting
     if any(
@@ -90,6 +114,10 @@ def _classify_line(line: str, section: str) -> Importance:
             "doe",
             "failure",
             "engineer",
+            "ate",
+            "slt",
+            "socket",
+            "thermal",
         )
     ):
         return Importance.IMPORTANT

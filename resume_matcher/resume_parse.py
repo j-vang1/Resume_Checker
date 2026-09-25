@@ -25,9 +25,15 @@ _SECTION_HEADERS = {
 
 _BULLET_RE = re.compile(r"^\s*(?:[-*•●▪◦◦]|\d+[.)])\s+(.*)$")
 _DATE_RANGE_RE = re.compile(
-    r"(?i)((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4}|\d{4})"
+    r"(?i)("
+    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4}"
+    r"|\d{1,2}/\d{4}"
+    r"|\d{4})"
     r"\s*[-–—to]+\s*"
-    r"((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4}|\d{4}|present|current|now)"
+    r"("
+    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4}"
+    r"|\d{1,2}/\d{4}"
+    r"|\d{4}|present|current|now)"
 )
 _MONTH_MAP = {
     "jan": 1,
@@ -96,6 +102,9 @@ def _parse_date_token(token: str) -> datetime | None:
     if m:
         month = _MONTH_MAP.get(m.group(1)[:3], 1)
         return datetime(int(m.group(2)), month, 1)
+    m = re.match(r"(\d{1,2})/(\d{4})", token)
+    if m:
+        return datetime(int(m.group(2)), int(m.group(1)), 1)
     if re.fullmatch(r"\d{4}", token):
         return datetime(int(token), 1, 1)
     return None
@@ -158,6 +167,11 @@ def parse_resume(text: str) -> ParsedResume:
 
         if current_section == "skills":
             skills_listed.extend(_extract_skills_from_line(stripped))
+            # Keep the full skills line as evidence (e.g. "thermal plunger/pedestal design")
+            if len(stripped) > 12:
+                bullets.append(
+                    Bullet(text=stripped, section="skills", role_context="Skills")
+                )
             continue
 
         # Inline "Skills: Python, SQL, ..." without a dedicated section header
@@ -166,13 +180,23 @@ def parse_resume(text: str) -> ParsedResume:
             if "skills" not in sections_found:
                 sections_found.append("skills")
             skills_listed.extend(_extract_skills_from_line(inline_skills.group(1)))
+            bullets.append(
+                Bullet(text=inline_skills.group(1).strip(), section="skills", role_context="Skills")
+            )
+            continue
+
+        # Summary / profile paragraphs are strong evidence
+        if current_section == "summary" and len(stripped) > 40:
+            bullets.append(
+                Bullet(text=stripped, section="summary", role_context="Summary")
+            )
             continue
 
         # Non-bulleted experience lines that look like achievements
         if current_section in {"experience", "projects"} and len(stripped) > 40:
             if stripped[0].isupper() or stripped[0].isdigit():
                 # Skip pure title/company lines with dates only
-                if _DATE_RANGE_RE.search(stripped) and len(stripped) < 80:
+                if _DATE_RANGE_RE.search(stripped) and len(stripped) < 100:
                     role_context = stripped
                     continue
                 bullets.append(
