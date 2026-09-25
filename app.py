@@ -230,7 +230,7 @@ def _render_detail(result: MatchResult, threshold: float) -> None:
         unsafe_allow_html=True,
     )
 
-    tab_overview, tab_keywords = st.tabs(["Overview", "Keywords"])
+    tab_overview, tab_keywords = st.tabs(["Overview", "Phrases"])
     with tab_overview:
         st.dataframe(
             [
@@ -261,7 +261,7 @@ def _render_detail(result: MatchResult, threshold: float) -> None:
     with tab_keywords:
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown("**Matched keywords**")
+            st.markdown("**Matched phrases**")
             if result.matched_keywords:
                 st.markdown(
                     " ".join(f'<span class="kw hit">{kw}</span>' for kw in result.matched_keywords),
@@ -441,7 +441,7 @@ def main() -> None:
                 st.info(lang.get("error") or "Could not detect language.")
             keywords = extract_keywords(job_text)
             if keywords:
-                with st.expander("Detected keywords", expanded=False):
+                with st.expander("Detected phrases / keywords", expanded=False):
                     st.markdown(
                         " ".join(f'<span class="kw">{kw}</span>' for kw in keywords),
                         unsafe_allow_html=True,
