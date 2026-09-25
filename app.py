@@ -215,6 +215,7 @@ def _evidence_flat_table(report: MatchReport) -> list[dict]:
                     "Importance": node["importance"],
                     "Strength": _strength_label(node["strength"]),
                     "Resume evidence": _short(ev["bullet"], 95),
+                    "Similarity": ev.get("semantic_similarity", ev.get("relevance", 0)),
                     "Ownership": ev.get("ownership", "—"),
                     "Depth": ev.get("technical_depth", "—"),
                     "Impact": ev.get("impact", "—"),
@@ -714,6 +715,21 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Settings")
+        from resume_matcher.llm_reasoner import llm_available
+        from resume_matcher.semantic import scoring_backend_info, warmup
+
+        try:
+            backend_label = warmup()
+        except Exception:  # noqa: BLE001
+            backend_label = scoring_backend_info()["label"]
+        st.success(f"Scoring: {backend_label}")
+        if llm_available():
+            st.info("OPENAI_API_KEY detected — LLM judge enabled for core requirements.")
+        else:
+            st.caption(
+                "Set OPENAI_API_KEY to add an LLM judge on top of embeddings."
+            )
+
         threshold = st.slider(
             "Greenlight threshold",
             min_value=0,

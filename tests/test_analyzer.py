@@ -115,7 +115,54 @@ def test_unrelated_bullets_are_not_strong_evidence():
                 assert "review resumes" not in ev["bullet"].lower()
 
 
-def test_semantic_credit_without_exact_phrase():
+def test_embeddings_prefer_related_over_unrelated():
+    """Semantic embeddings must credit real RCA evidence and reject recruiter text."""
+    from resume_matcher.evidence import EvidenceStrength, build_evidence_graph
+    from resume_matcher.jd_parser import parse_job_description
+    from resume_matcher.resume_parse import parse_resume
+    from resume_matcher.semantic import warmup
+
+    warmup()
+    job = """
+    Responsibilities:
+    - Perform root cause analysis on intermittent hardware failures
+    - Experience with test sockets and thermal plungers
+    """
+    good = parse_resume(
+        """Experience
+        - Investigated intermittent ECID failures and isolated socket contact instability.
+        - Designed thermal plunger hardware for -40C ATE test.
+        """
+    )
+    bad = parse_resume(
+        """Experience
+        - Review resumes, conduct screens, and evaluate candidates' qualifications.
+        - Perform agricultural surveillance and investigate pesticide complaints.
+        """
+    )
+    reqs = parse_job_description(job)
+    good_graph = build_evidence_graph(reqs, good)
+    bad_graph = build_evidence_graph(reqs, bad)
+
+    rca_good = next(
+        n
+        for n in good_graph
+        if "root cause" in n.requirement.lower() or "intermittent" in n.requirement.lower()
+    )
+    assert rca_good.strength in {
+        EvidenceStrength.MODERATE,
+        EvidenceStrength.STRONG,
+        EvidenceStrength.VERY_STRONG,
+    }
+    assert rca_good.evidence
+    assert rca_good.evidence[0].semantic_similarity >= 0.30
+
+    for node in bad_graph:
+        if node.importance in {"Core", "Important"}:
+            assert node.strength in {EvidenceStrength.NONE, EvidenceStrength.WEAK}
+            for ev in node.evidence:
+                assert "resume" not in ev.bullet.lower()
+                assert "agricultural" not in ev.bullet.lower()
     """RCA credited from 'investigated intermittent...isolated' without saying 'root cause analysis'."""
     resume = parse_resume(RESUME_STRONG)
     reqs = parse_job_description(JOB)
