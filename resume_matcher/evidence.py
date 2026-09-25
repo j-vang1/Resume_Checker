@@ -442,8 +442,8 @@ def build_evidence_graph(
     bullets = [
         b
         for b in (resume.bullets or [])
-        if b.section in {"experience", "projects", "summary"}
-        and not re.match(r"(?i)^skills?\b", b.text.strip())
+        if b.section in {"experience", "projects", "summary", "skills"}
+        and not re.match(r"(?i)^skills?\s*$", b.text.strip())
     ]
     if not bullets:
         bullets = [
@@ -470,30 +470,51 @@ def build_evidence_graph(
         items: list[EvidenceItem] = []
         ownership_hits = depth_hits = impact_hits = 0
         for sim, bullet, matched in top:
+            # Skills-list evidence is weaker than lived experience bullets
+            relevance = sim
+            if bullet.section == "skills":
+                relevance = min(relevance, 0.42)
             own = _ownership_label(bullet.text)
             impact = _impact_label(bullet.text)
             depth = _depth_label(bullet.text)
-            if own == "Strong":
-                ownership_hits += 1
-            if depth == "Strong":
-                depth_hits += 1
-            if impact == "Strong":
-                impact_hits += 1
+            if bullet.section != "skills":
+                if own == "Strong":
+                    ownership_hits += 1
+                if depth == "Strong":
+                    depth_hits += 1
+                if impact == "Strong":
+                    impact_hits += 1
             items.append(
                 EvidenceItem(
                     bullet=bullet.text,
-                    relevance=round(sim, 3),
-                    ownership=own,
-                    impact=impact,
-                    technical_depth=depth,
+                    relevance=round(relevance, 3),
+                    ownership=own if bullet.section != "skills" else "Listed",
+                    impact=impact if bullet.section != "skills" else "Listed",
+                    technical_depth=depth if bullet.section != "skills" else "Listed",
                     matched_concepts=matched,
                 )
             )
 
-        best_sim = top[0][0] if top else 0.0
-        strength = _classify_strength(
-            best_sim, len(items), ownership_hits, depth_hits, impact_hits
+        # Prefer experience evidence when ranking strength
+        best_sim = max((i.relevance for i in items), default=0.0)
+        exp_count = sum(
+            1
+            for _, bullet, _ in top
+            if bullet.section in {"experience", "projects", "summary"}
         )
+        strength = _classify_strength(
+            best_sim,
+            exp_count if exp_count else len(items),
+            ownership_hits,
+            depth_hits,
+            impact_hits,
+        )
+        # If only skills-list evidence exists, cap at Moderate
+        if items and exp_count == 0 and strength in {
+            EvidenceStrength.STRONG,
+            EvidenceStrength.VERY_STRONG,
+        }:
+            strength = EvidenceStrength.MODERATE
         results.append(
             RequirementEvidence(
                 requirement=req.text,

@@ -17,7 +17,11 @@ import streamlit as st
 from resume_matcher.analyzer import analyze_resumes
 from resume_matcher.jd_parser import parse_job_description
 from resume_matcher.language import detect_language
-from resume_matcher.parsers import UnsupportedFileTypeError, extract_text_from_bytes
+from resume_matcher.parsers import (
+    EmptyExtractError,
+    UnsupportedFileTypeError,
+    extract_text_from_bytes,
+)
 from resume_matcher.report import MatchReport
 
 _STYLES = """
@@ -404,28 +408,40 @@ def main() -> None:
             accept_multiple_files=True,
             help="Upload one or more .pdf or .docx resume files.",
         )
+        pasted = st.text_area(
+            "Or paste resume text (use if PDF extract fails)",
+            height=160,
+            placeholder="Paste resume text here as a fallback when a designed PDF extracts poorly…",
+            key="pasted_resume",
+        )
         parsed: list[tuple[str, str]] = []
         parse_errors: list[str] = []
         if uploads:
             for uploaded in uploads:
                 try:
                     text = extract_text_from_bytes(uploaded.getvalue(), uploaded.name)
-                    if not text.strip():
-                        parse_errors.append(
-                            f"{uploaded.name}: no extractable text (scanned PDFs need OCR)."
-                        )
-                    else:
-                        parsed.append((uploaded.name, text))
+                    parsed.append((uploaded.name, text))
+                except EmptyExtractError as exc:
+                    parse_errors.append(str(exc))
                 except UnsupportedFileTypeError as exc:
                     parse_errors.append(str(exc))
                 except Exception as exc:  # noqa: BLE001
                     parse_errors.append(f"{uploaded.name}: {exc}")
-            st.caption(
-                f"{len(parsed)} resume(s) ready"
-                + (f" · {len(parse_errors)} failed" if parse_errors else "")
+        if pasted.strip():
+            parsed.append(("pasted_resume.txt", pasted.strip()))
+
+        if parsed:
+            st.caption(f"{len(parsed)} resume(s) ready" + (f" · {len(parse_errors)} failed" if parse_errors else ""))
+            with st.expander("Preview extracted text", expanded=False):
+                for name, text in parsed:
+                    st.markdown(f"**{name}** — {len(text)} characters")
+                    st.code(text[:1200] + ("…" if len(text) > 1200 else ""), language=None)
+        for err in parse_errors:
+            st.error(err)
+            st.info(
+                "Tip: designed/column PDFs often fail text extraction. "
+                "Export a simpler PDF, upload .docx, or paste the resume text above."
             )
-            for err in parse_errors:
-                st.warning(err)
 
     st.divider()
     run = st.button(
@@ -434,7 +450,7 @@ def main() -> None:
         disabled=not (job_text.strip() and parsed),
     )
 
-    if not job_text.strip() and not uploads:
+    if not job_text.strip() and not uploads and not pasted.strip():
         st.info("Paste a job description and upload resumes to generate evidence-based match reports.")
         return
 

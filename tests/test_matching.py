@@ -118,11 +118,22 @@ def test_docx_parser_roundtrip():
 
 def test_extract_text_from_bytes_docx():
     document = Document()
-    document.add_paragraph("Resume text for parsing.")
+    document.add_paragraph(
+        "Alice Example — Hardware Engineer with experience in ATE test sockets, "
+        "thermal plungers, DOE, and root cause analysis across semiconductor production."
+    )
     buffer = io.BytesIO()
     document.save(buffer)
     text = extract_text_from_bytes(buffer.getvalue(), "resume.docx")
-    assert "Resume text" in text
+    assert "Alice Example" in text
+    assert "ATE" in text
+
+
+def test_empty_extract_raises():
+    from resume_matcher.parsers import EmptyExtractError
+
+    with pytest.raises(EmptyExtractError):
+        extract_text_from_bytes(b"%PDF-1.4 empty", "blank.pdf")
 
 
 def test_unsupported_extension():

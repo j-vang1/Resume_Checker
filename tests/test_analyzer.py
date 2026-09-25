@@ -136,7 +136,49 @@ def test_semantic_credit_without_exact_phrase():
     assert "root cause analysis" not in rca.evidence[0].bullet.lower()
 
 
-def test_hardware_validation_gets_strong_evidence():
+def test_john_style_ate_resume_against_socket_jd():
+    """A real ATE/socket/thermal resume must not score 0 against a matching JD."""
+    job = """
+    What you'll be doing:
+    Review and approve the design of test socket, thermal plunger, and other accessories related to ATE/SLT IC testing.
+    Drive DOE with a sense of responsibility from gathering and analyzing engineering data.
+    Apply strong hardware troubleshooting and root-cause analysis.
+    Able to debug ATE/SLT hardware setup such as socket, thermal plunger, PCB, chiller, and handler.
+
+    What we need to see:
+    Experience with test sockets and thermal plungers is a strong plus.
+    Having ATE tester knowledge is a plus.
+    """
+    resume = """
+    John Vang
+    johnsan902@gmail.com
+
+    Professional Summary
+    Test Engineer specializing in ATE/SLT test engineering on Advantest 93K platforms, hardware debug, and DOE.
+
+    Work History
+    Hardware Engineer | NVIDIA | 07/2023 to CURRENT
+    - Debugged Advantest 93K SmartTest8 programs, resolving JTAG faults and continuity errors.
+    - Designed and standardized sub-zero (-40C) test hardware across manufacturing sites.
+    - Built validation protocols with DOE to ensure tester and bench correlation.
+    - Supported production and NPI test solutions including socket design, thermal solutions, and test hardware debug.
+    - Conducted root cause analysis of thermal and electrical test issues.
+
+    Skills
+    Hardware: Test fixture development, thermal plunger/pedestal design, test socket design
+    Debug & Analysis: DOE, continuity debug, root cause analysis
+    """
+    report = analyze_resume(job, resume, filename="John_Vang.pdf", threshold=50)
+    assert report.composite_score > 40
+    assert report.greenlit is True or report.overall["overall_role_alignment"] in {
+        "Strong",
+        "Moderate",
+    }
+    assert any(n["evidence"] for n in report.evidence_graph)
+    # Must not treat section headers as requirements with evidence
+    assert not any(
+        n["requirement"].lower().startswith("what you") for n in report.evidence_graph if n["strength"] != "No Evidence"
+    )
     report = analyze_resume(JOB, RESUME_STRONG, filename="strong.pdf", threshold=50)
     assert report.composite_score >= 50
     assert report.greenlit is True
