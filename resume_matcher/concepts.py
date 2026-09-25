@@ -417,22 +417,61 @@ def expand_query(text: str) -> set[str]:
 
 
 def find_concepts_in_text(text: str) -> list[ConceptMatch]:
-    """Detect which concepts are evidenced in text."""
+    """Detect which concepts are evidenced in text.
+
+    Ambiguous single verbs (investigate, debug, review) alone do not count;
+    prefer multi-word / distinctive technical terms.
+    """
     lower = (text or "").lower()
+    ambiguous = {
+        "investigated",
+        "investigate",
+        "debugged",
+        "debug",
+        "debugging",
+        "isolated",
+        "isolate",
+        "diagnosed",
+        "diagnose",
+        "analyzed",
+        "analysis",
+        "review",
+        "reviewed",
+        "coordinated",
+        "coordinate",
+        "collaborated",
+        "supported",
+        "designed",
+        "tested",
+        "testing",
+        "hardware",
+        "failure",
+        "failures",
+        "validation",
+        "qualification",
+    }
     matches: list[ConceptMatch] = []
     for concept_id, terms in CONCEPT_GRAPH.items():
         hit_terms = sorted({t for t in terms if t in lower}, key=len, reverse=True)
-        # Prefer multi-word / distinctive hits
         if not hit_terms:
             continue
-        # Score by longest hit and count
-        best_len = max(len(t) for t in hit_terms)
-        score = min(1.0, 0.35 + 0.1 * len(hit_terms) + 0.02 * best_len)
+        strong = [
+            t
+            for t in hit_terms
+            if (" " in t or "-" in t or "/" in t)
+            or (len(t) >= 5 and t not in ambiguous)
+        ]
+        weak = [t for t in hit_terms if t in ambiguous]
+        if not strong and len(weak) < 2:
+            continue
+        used = strong or weak
+        best_len = max(len(t) for t in used)
+        score = min(1.0, 0.35 + 0.1 * len(used) + 0.02 * best_len)
         matches.append(
             ConceptMatch(
                 concept_id=concept_id,
                 label=concept_label(concept_id),
-                matched_terms=hit_terms[:8],
+                matched_terms=used[:8],
                 score=score,
             )
         )
