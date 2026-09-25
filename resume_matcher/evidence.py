@@ -1,8 +1,4 @@
-"""Evidence graph: link job requirements to resume evidence and score strength.
-
-Relevance requires domain/concept overlap — shared generic verbs like
-"review", "investigate", or "perform" are NOT enough.
-"""
+"""Evidence graph: link job requirements to resume evidence using semantic embeddings."""
 
 from __future__ import annotations
 
@@ -10,13 +6,10 @@ import re
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
-from .concepts import CONCEPT_GRAPH, concept_label, find_concepts_in_text
+from .concepts import concept_label, find_concepts_in_text
 from .jd_parser import Importance, Requirement
 from .resume_parse import Bullet, ParsedResume
-
+from .semantic import similarity_matrix
 
 class EvidenceStrength(str, Enum):
     NONE = "No Evidence"
@@ -34,31 +27,31 @@ STRENGTH_SCORE = {
     EvidenceStrength.VERY_STRONG: 1.0,
 }
 
-# Verbs/adjectives that appear in almost every JD and resume — never treat as domain proof
-_GENERIC_TOKENS = frozenset(
-    """
-    a an the and or but if then else when at by for with about against between into
-    through during before after above below to from up down in out on off over under
-    again further once here there all any both each few more most other some such no
-    nor not only own same so than too very can will just don should now is are was
-    were be been being have has had do does did of this that these those it its as we
-    you your he she they them their our i me my
-    review reviews reviewed approve approves approved provide provides provided
-    apply applies applied able willingness willing possess possesses experience
-    experiences strong good excellent work works working team teams using use used
-    including include related relatedness support supports supported help helps
-    helped make makes made ensure ensures ensured conduct conducts conducted
-    perform performs performed manage manages managed responsible ability skills
-    knowledge understanding demonstrate demonstrates demonstrated drive drives
-    driven gather gathers gathering analyze analyzes analyzing analysis
-    decision decisions recommendation recommendations improvement improvements
-    process processes project projects multiple various several duties role roles
-    candidate candidates resume resumes screen screens screening evaluate
-    evaluates evaluating qualifications hire hiring recruit recruiting
-    agricultural agriculture pesticide pesticides surveillance complaint complaints
-    marketing social media newsletter brand campaign campaigns sales customer
-    customers retail promotional event events
-    """.split()
+# Still used to slightly boost / explain matches — embeddings do the heavy lifting
+_DOMAIN_HINTS = (
+    "ate",
+    "slt",
+    "socket",
+    "thermal",
+    "plunger",
+    "doe",
+    "jtag",
+    "pcb",
+    "handler",
+    "advantest",
+    "validation",
+    "qualification",
+    "debug",
+    "failure",
+    "semiconductor",
+    "fixture",
+    "load board",
+    "signal integrity",
+    "root cause",
+    "python",
+    "fastapi",
+    "kubernetes",
+    "aws",
 )
 
 _OWNERSHIP_STRONG = (
@@ -128,54 +121,6 @@ _DEPTH_MARKERS = (
     "socket",
 )
 
-# Single-token concept triggers that are too ambiguous alone (need a domain partner)
-_AMBIGUOUS_CONCEPT_TRIGGERS = frozenset(
-    {
-        "investigated",
-        "investigate",
-        "debugged",
-        "debug",
-        "debugging",
-        "isolated",
-        "isolate",
-        "diagnosed",
-        "diagnose",
-        "analyzed",
-        "analysis",
-        "review",
-        "reviewed",
-        "coordinated",
-        "coordinate",
-        "collaborated",
-        "collaborate",
-        "worked with",
-        "supported",
-        "support",
-        "improved",
-        "reduced",
-        "designed",
-        "design",
-        "tested",
-        "testing",
-        "test",
-        "hardware",
-        "system",
-        "systems",
-        "data",
-        "customer",
-        "client",
-        "automation",
-        "automated",
-        "qualification",
-        "validation",
-        "verification",
-        "failure",
-        "failures",
-        "defect",
-        "defects",
-    }
-)
-
 
 @dataclass
 class EvidenceItem:
@@ -185,6 +130,7 @@ class EvidenceItem:
     impact: str
     technical_depth: str
     matched_concepts: list[str] = field(default_factory=list)
+    semantic_similarity: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -209,139 +155,6 @@ class RequirementEvidence:
             "notes": self.notes,
             "strength_score": STRENGTH_SCORE[self.strength],
         }
-
-
-def _tokens(text: str) -> set[str]:
-    return {
-        t
-        for t in re.findall(r"[a-zA-Z][a-zA-Z0-9+#.\-]{1,}", (text or "").lower())
-        if t not in _GENERIC_TOKENS and len(t) > 2
-    }
-
-
-def _domain_tokens(text: str) -> set[str]:
-    """Content tokens that can justify domain relevance."""
-    return _tokens(text)
-
-
-def _shared_domain_terms(req_text: str, bullet_text: str, related: list[str]) -> set[str]:
-    req_terms = _domain_tokens(req_text) | {
-        t.lower() for t in related if t.lower() not in _GENERIC_TOKENS and len(t) > 3
-    }
-    # Prefer multi-word related phrases present in the bullet
-    bullet_lower = bullet_text.lower()
-    hits: set[str] = set()
-    for phrase in related:
-        p = phrase.lower().strip()
-        if len(p) < 4 or p in _GENERIC_TOKENS or p in _AMBIGUOUS_CONCEPT_TRIGGERS:
-            continue
-        if p in bullet_lower:
-            hits.add(p)
-    # Token overlap on distinctive terms
-    bullet_terms = _domain_tokens(bullet_text)
-    for term in req_terms & bullet_terms:
-        if term not in _AMBIGUOUS_CONCEPT_TRIGGERS:
-            hits.add(term)
-    return hits
-
-
-def _concept_ids_in_text(text: str) -> set[str]:
-    """Concepts evidenced in text, ignoring ambiguous single-verb-only hits."""
-    lower = (text or "").lower()
-    found: set[str] = set()
-    for concept_id, terms in CONCEPT_GRAPH.items():
-        # Strong hits: multi-word terms or distinctive tokens (>= 5 chars, not ambiguous)
-        strong = [
-            t
-            for t in terms
-            if t in lower
-            and (
-                (" " in t or "-" in t or "/" in t)
-                or (len(t) >= 5 and t not in _AMBIGUOUS_CONCEPT_TRIGGERS)
-            )
-        ]
-        if strong:
-            found.add(concept_id)
-            continue
-        # Weak single-token hits only count if paired with another domain token from same concept
-        weak = [t for t in terms if t in lower and t in _AMBIGUOUS_CONCEPT_TRIGGERS]
-        if len(weak) >= 2:
-            found.add(concept_id)
-    return found
-
-
-def _shared_concepts(req: Requirement, bullet_text: str) -> list[str]:
-    req_concepts = _concept_ids_in_text(req.text + " " + " ".join(req.related_concepts))
-    # Also map requirement text onto graph via find_concepts with filtering
-    for c in find_concepts_in_text(req.text):
-        # Keep only if not solely ambiguous
-        if c.concept_id in _concept_ids_in_text(req.text) or c.concept_id in req_concepts:
-            req_concepts.add(c.concept_id)
-    bullet_concepts = _concept_ids_in_text(bullet_text)
-    shared = sorted(req_concepts & bullet_concepts)
-    return [concept_label(c) for c in shared]
-
-
-def _tfidf_domain_similarity(a: str, b: str) -> float:
-    """TF-IDF similarity on domain tokens only (generics stripped)."""
-    a_toks = sorted(_domain_tokens(a))
-    b_toks = sorted(_domain_tokens(b))
-    if len(a_toks) < 2 or len(b_toks) < 2:
-        return 0.0
-    try:
-        vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
-        matrix = vec.fit_transform([" ".join(a_toks), " ".join(b_toks)])
-        return float(cosine_similarity(matrix[0:1], matrix[1:2])[0][0])
-    except ValueError:
-        return 0.0
-
-
-def relevance_score(
-    req: Requirement, bullet_text: str
-) -> tuple[float, list[str], set[str]]:
-    """
-    Return (score 0-1, shared concept labels, shared domain terms).
-
-    A bullet must share distinctive domain terms and/or the same technical
-    concept — overlapping verbs like "review"/"investigate" alone score ~0.
-    """
-    shared_terms = _shared_domain_terms(req.text, bullet_text, req.related_concepts)
-    shared_concepts = _shared_concepts(req, bullet_text)
-    sim = _tfidf_domain_similarity(
-        req.text + " " + " ".join(req.related_concepts), bullet_text
-    )
-
-    if not shared_terms and not shared_concepts:
-        # Pure TF-IDF on leftover tokens is still suspicious — require a floor
-        return (0.0 if sim < 0.35 else round(sim * 0.4, 3), [], set())
-
-    score = 0.0
-    # Distinctive term hits are the primary signal
-    score += min(0.55, 0.18 * len(shared_terms))
-    # Shared technical concepts
-    score += min(0.35, 0.15 * len(shared_concepts))
-    # Mild TF-IDF assist only after domain proof exists
-    score += 0.25 * sim
-
-    # Multi-word technical phrase in both sides is strong
-    bullet_l = bullet_text.lower()
-    req_l = req.text.lower()
-    for phrase in (
-        "root cause",
-        "signal integrity",
-        "thermal plunger",
-        "test socket",
-        "hardware validation",
-        "failure analysis",
-        "design of experiments",
-        "ate",
-        "slt",
-        "doe",
-    ):
-        if phrase in req_l and phrase in bullet_l:
-            score += 0.2
-
-    return min(1.0, score), shared_concepts[:6], shared_terms
 
 
 def _ownership_label(text: str) -> str:
@@ -386,32 +199,60 @@ def _depth_label(text: str) -> str:
     return "Weak"
 
 
+def _domain_overlap(req_text: str, bullet_text: str, related: list[str]) -> list[str]:
+    blob = (bullet_text or "").lower()
+    req = (req_text + " " + " ".join(related)).lower()
+    hits = []
+    for hint in _DOMAIN_HINTS:
+        if hint in req and hint in blob:
+            hits.append(hint)
+    for phrase in related:
+        p = phrase.lower().strip()
+        if len(p) >= 4 and p in blob:
+            hits.append(p)
+    # de-dupe preserve order
+    seen: set[str] = set()
+    out = []
+    for h in hits:
+        if h not in seen:
+            seen.add(h)
+            out.append(h)
+    return out[:8]
+
+
 def _classify_strength(
-    best_relevance: float,
+    best_sim: float,
     evidence_count: int,
     ownership_hits: int,
     depth_hits: int,
     impact_hits: int,
+    domain_hits: int,
 ) -> EvidenceStrength:
-    # Relevance gate: ownership/depth cannot inflate unrelated bullets
-    if evidence_count == 0 or best_relevance < 0.28:
+    """Map embedding similarity (+ light quality signals) to evidence strength."""
+    if evidence_count == 0 or best_sim < 0.22:
         return EvidenceStrength.NONE
-    if best_relevance < 0.40:
-        return EvidenceStrength.WEAK
 
-    score = best_relevance
-    score += min(0.12, 0.04 * evidence_count)
-    score += 0.05 * ownership_hits
-    score += 0.05 * depth_hits
-    score += 0.04 * impact_hits
+    # Embedding floors (calibrated on MiniLM)
+    if best_sim >= 0.58 and (domain_hits or depth_hits):
+        base = EvidenceStrength.VERY_STRONG
+    elif best_sim >= 0.45:
+        base = EvidenceStrength.STRONG
+    elif best_sim >= 0.34:
+        base = EvidenceStrength.MODERATE
+    elif best_sim >= 0.22:
+        base = EvidenceStrength.WEAK
+    else:
+        return EvidenceStrength.NONE
 
-    if score >= 0.88 and evidence_count >= 2 and best_relevance >= 0.55:
+    # Quality can promote one step when semantic already solid
+    quality = ownership_hits + depth_hits + impact_hits
+    if base == EvidenceStrength.STRONG and quality >= 2 and evidence_count >= 2 and best_sim >= 0.50:
         return EvidenceStrength.VERY_STRONG
-    if score >= 0.62 and best_relevance >= 0.48:
+    if base == EvidenceStrength.MODERATE and quality >= 2 and best_sim >= 0.38:
         return EvidenceStrength.STRONG
-    if score >= 0.45:
+    if base == EvidenceStrength.WEAK and domain_hits and best_sim >= 0.28:
         return EvidenceStrength.MODERATE
-    return EvidenceStrength.WEAK
+    return base
 
 
 def _notes_for(strength: EvidenceStrength, items: list[EvidenceItem], req: Requirement) -> str:
@@ -420,30 +261,32 @@ def _notes_for(strength: EvidenceStrength, items: list[EvidenceItem], req: Requi
             f"No clear resume evidence found for '{req.text}'. "
             "If you have related experience, make the connection explicit."
         )
+    best = max((i.semantic_similarity for i in items), default=0.0)
     if strength == EvidenceStrength.WEAK:
-        return "Limited or indirect evidence; clarify ownership and technical method."
+        return (
+            f"Only weak semantic overlap (similarity {best:.2f}); "
+            "clarify ownership and technical method."
+        )
     if any(i.impact == "Weak" for i in items) and strength in {
         EvidenceStrength.STRONG,
         EvidenceStrength.MODERATE,
     }:
-        return "Technical relevance is present, but measurable outcomes are thin."
+        return (
+            f"Relevant experience found (similarity {best:.2f}), "
+            "but measurable outcomes are thin."
+        )
     if strength == EvidenceStrength.VERY_STRONG:
-        return "Multiple concrete bullets with ownership and technical depth."
-    return "Clear supporting evidence present in experience bullets."
+        return f"Strong semantic match (similarity {best:.2f}) with ownership and technical depth."
+    return f"Clear supporting evidence (similarity {best:.2f})."
 
 
-def build_evidence_graph(
-    requirements: list[Requirement],
-    resume: ParsedResume,
-    max_evidence_per_req: int = 4,
-) -> list[RequirementEvidence]:
-    """For each important requirement, find supporting resume evidence."""
-    results: list[RequirementEvidence] = []
+def _candidate_bullets(resume: ParsedResume) -> list[Bullet]:
     bullets = [
         b
         for b in (resume.bullets or [])
         if b.section in {"experience", "projects", "summary", "skills"}
         and not re.match(r"(?i)^skills?\s*$", b.text.strip())
+        and len(b.text.strip()) > 20
     ]
     if not bullets:
         bullets = [
@@ -452,31 +295,92 @@ def build_evidence_graph(
             if b.section != "skills" and len(b.text) > 40
         ]
     if not bullets and resume.raw_text.strip():
-        bullets = [Bullet(text=resume.raw_text[:500], section="experience")]
+        # Chunk raw text as last resort
+        chunks = re.split(r"\n+", resume.raw_text)
+        bullets = [
+            Bullet(text=c.strip(), section="experience")
+            for c in chunks
+            if len(c.strip()) > 40
+        ][:30]
+    return bullets
 
+
+def build_evidence_graph(
+    requirements: list[Requirement],
+    resume: ParsedResume,
+    max_evidence_per_req: int = 4,
+) -> list[RequirementEvidence]:
+    """For each important requirement, find supporting resume evidence via embeddings."""
+    results: list[RequirementEvidence] = []
+    bullets = _candidate_bullets(resume)
     scored_reqs = [r for r in requirements if r.importance != Importance.GENERIC]
-    for req in scored_reqs:
-        ranked: list[tuple[float, Bullet, list[str]]] = []
-        for bullet in bullets:
-            score, shared_concepts, shared_terms = relevance_score(req, bullet.text)
-            # Hard reject: no distinctive overlap
-            if score < 0.28 or (not shared_terms and not shared_concepts):
+    if not scored_reqs or not bullets:
+        for req in scored_reqs:
+            results.append(
+                RequirementEvidence(
+                    requirement=req.text,
+                    importance=req.importance.value,
+                    related_concepts=req.related_concepts,
+                    evidence=[],
+                    strength=EvidenceStrength.NONE,
+                    notes=_notes_for(EvidenceStrength.NONE, [], req),
+                )
+            )
+        return results
+
+    # Batch embed all requirements and bullets once (fast for many resumes' bullets)
+    queries = [
+        req.text
+        + (
+            ". Related: " + ", ".join(req.related_concepts[:8])
+            if req.related_concepts
+            else ""
+        )
+        for req in scored_reqs
+    ]
+    docs = [b.text for b in bullets]
+    sim = similarity_matrix(queries, docs)
+
+    for req_idx, req in enumerate(scored_reqs):
+        ranked: list[tuple[float, float, Bullet, list[str], list[str]]] = []
+        for bullet_idx, bullet in enumerate(bullets):
+            semantic = float(sim[req_idx, bullet_idx])
+            domain = _domain_overlap(req.text, bullet.text, req.related_concepts)
+            concepts = [
+                c.label
+                for c in find_concepts_in_text(bullet.text)
+                if c.concept_id
+                in {x.concept_id for x in find_concepts_in_text(req.text)}
+                or any(t in req.text.lower() for t in c.matched_terms[:3])
+            ]
+            # Soft boost for domain overlap; cannot invent relevance from zero
+            boost = min(0.12, 0.03 * len(domain) + 0.02 * len(concepts))
+            relevance = min(1.0, semantic + boost)
+
+            # Reject unrelated: low semantic AND no domain overlap
+            if semantic < 0.22 and not domain:
                 continue
-            ranked.append((score, bullet, shared_concepts))
+            if relevance < 0.24:
+                continue
+
+            # Cap skills-list bullets
+            if bullet.section == "skills":
+                relevance = min(relevance, 0.42)
+                semantic = min(semantic, 0.42)
+
+            ranked.append((relevance, semantic, bullet, concepts[:5], domain))
 
         ranked.sort(key=lambda x: x[0], reverse=True)
         top = ranked[:max_evidence_per_req]
 
         items: list[EvidenceItem] = []
         ownership_hits = depth_hits = impact_hits = 0
-        for sim, bullet, matched in top:
-            # Skills-list evidence is weaker than lived experience bullets
-            relevance = sim
-            if bullet.section == "skills":
-                relevance = min(relevance, 0.42)
+        domain_hit_count = 0
+        for relevance, semantic, bullet, matched, domain in top:
             own = _ownership_label(bullet.text)
             impact = _impact_label(bullet.text)
             depth = _depth_label(bullet.text)
+            domain_hit_count += len(domain)
             if bullet.section != "skills":
                 if own == "Strong":
                     ownership_hits += 1
@@ -491,30 +395,27 @@ def build_evidence_graph(
                     ownership=own if bullet.section != "skills" else "Listed",
                     impact=impact if bullet.section != "skills" else "Listed",
                     technical_depth=depth if bullet.section != "skills" else "Listed",
-                    matched_concepts=matched,
+                    matched_concepts=matched or [concept_label(d) for d in domain[:3]],
+                    semantic_similarity=round(semantic, 3),
                 )
             )
 
-        # Prefer experience evidence when ranking strength
-        best_sim = max((i.relevance for i in items), default=0.0)
-        exp_count = sum(
-            1
-            for _, bullet, _ in top
-            if bullet.section in {"experience", "projects", "summary"}
-        )
+        best_sim = max((i.semantic_similarity for i in items), default=0.0)
+        exp_count = sum(1 for _, _, b, _, _ in top if b.section != "skills")
         strength = _classify_strength(
             best_sim,
             exp_count if exp_count else len(items),
             ownership_hits,
             depth_hits,
             impact_hits,
+            domain_hit_count,
         )
-        # If only skills-list evidence exists, cap at Moderate
         if items and exp_count == 0 and strength in {
             EvidenceStrength.STRONG,
             EvidenceStrength.VERY_STRONG,
         }:
             strength = EvidenceStrength.MODERATE
+
         results.append(
             RequirementEvidence(
                 requirement=req.text,

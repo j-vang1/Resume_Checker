@@ -6,8 +6,10 @@ from .ats import assess_ats
 from .evidence import build_evidence_graph
 from .jd_parser import parse_job_description
 from .language import detect_language
+from .llm_reasoner import llm_available, refine_evidence_with_llm
 from .report import MatchReport, build_report
 from .resume_parse import parse_resume
+from .semantic import scoring_backend_info, warmup
 from .signals import (
     analyze_bullets,
     assess_seniority,
@@ -22,23 +24,28 @@ def analyze_resume(
     resume_text: str,
     filename: str = "resume",
     threshold: float = 50.0,
+    use_llm: bool = True,
 ) -> MatchReport:
     """
     Run the full evidence-based assessment for one resume.
 
-    Primary question answered:
-    "How convincingly does this resume demonstrate that this candidate
-    can perform this specific job?"
+    Uses semantic embeddings for requirement↔bullet matching.
+    Optionally refines Core/Important strengths with an LLM when
+    OPENAI_API_KEY is set.
     """
     if not (job_description or "").strip():
         return _empty_report(filename, threshold, "Job description is empty.")
     if not (resume_text or "").strip():
         return _empty_report(filename, threshold, "Could not extract text from this resume.")
 
+    warmup()
     language = detect_language(job_description)
     requirements = parse_job_description(job_description)
     resume = parse_resume(resume_text)
     evidence_graph = build_evidence_graph(requirements, resume)
+    if use_llm and llm_available():
+        evidence_graph = refine_evidence_with_llm(job_description, evidence_graph)
+
     overall = overall_alignment(evidence_graph, requirements)
     seniority = assess_seniority(resume, job_description)
     ats = assess_ats(resume, filename)
@@ -46,7 +53,7 @@ def analyze_resume(
     consistency = check_consistency(resume)
     bullets = analyze_bullets(resume, evidence_graph)
 
-    return build_report(
+    report = build_report(
         filename=filename,
         language=language,
         requirements=requirements,
@@ -60,6 +67,13 @@ def analyze_resume(
         bullet_analyses=bullets,
         threshold=threshold,
     )
+    backend = scoring_backend_info()
+    llm_note = " + LLM judge" if (use_llm and llm_available()) else ""
+    report.score_explanation = (
+        f"Scored with {backend['label']}{llm_note}. "
+        + report.score_explanation
+    )
+    return report
 
 
 def analyze_resumes(
