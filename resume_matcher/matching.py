@@ -1,4 +1,9 @@
-"""Score resumes against a job description using keywords + TF-IDF similarity."""
+"""Score resumes against a job description using keywords + TF-IDF similarity.
+
+Both JDs and resumes often lead bullets with stock verbs ("Demonstrate",
+"Review", "Responsible for", "Led", …). Matching reads past those lead-ins
+so similarity is judged on the substance that follows.
+"""
 
 from __future__ import annotations
 
@@ -24,7 +29,96 @@ _STOPWORDS = frozenset(
     """.split()
 )
 
+# Stock lead-in verbs/words common at the start of JD bullets and resume bullets.
+# Matching skips these so "Demonstrated thermal plunger design" aligns with
+# "Review thermal plunger design" on the meaningful terms.
+_LEAD_IN_WORDS = frozenset(
+    """
+    demonstrate demonstrates demonstrated demonstrating
+    review reviews reviewed reviewing
+    approve approves approved approving
+    provide provides provided providing
+    apply applies applied applying
+    perform performs performed performing
+    conduct conducts conducted conducting
+    manage manages managed managing
+    support supports supported supporting
+    assist assists assisted assisting
+    lead leads led leading
+    drive drives drove driven driving
+    develop develops developed developing
+    design designs designed designing
+    build builds built building
+    create creates created creating
+    implement implements implemented implementing
+    deliver delivers delivered delivering
+    own owned owning
+    ensure ensures ensured ensuring
+    maintain maintains maintained maintaining
+    coordinate coordinates coordinated coordinating
+    collaborate collaborates collaborated collaborating
+    work works worked working
+    help helps helped helping
+    use used using utilize utilized utilizing
+    analyze analyzes analyzed analyzing
+    evaluate evaluates evaluated evaluating
+    identify identifies identified identifying
+    establish establishes established establishing
+    improve improves improved improving
+    optimize optimizes optimized optimizing
+    execute executes executed executing
+    oversee oversees oversaw overseeing
+    handle handles handled handling
+    participate participated participating
+    contribute contributed contributing
+    able willingness willing
+    responsible responsibility
+    experience experienced
+    proven strong excellent solid deep
+    ability skills knowledge understanding
+    must should required preferred
+    successfully highly extensively
+    """.split()
+)
+
+# Multi-word lead-in phrases stripped from the start of a line (longest first)
+_LEAD_IN_PHRASES = tuple(
+    sorted(
+        [
+            "responsible for",
+            "responsibility for",
+            "demonstrated ability to",
+            "proven ability to",
+            "ability to",
+            "able to",
+            "experience with",
+            "experience in",
+            "experienced in",
+            "experienced with",
+            "familiar with",
+            "knowledge of",
+            "understanding of",
+            "skilled in",
+            "proficient in",
+            "expertise in",
+            "worked on",
+            "worked with",
+            "helped with",
+            "assisted with",
+            "participated in",
+            "involved in",
+            "in charge of",
+            "duties included",
+            "tasks included",
+            "successfully",
+        ],
+        key=len,
+        reverse=True,
+    )
+)
+
 _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+#.\-]{1,}")
+_BULLET_SPLIT_RE = re.compile(r"[\n\r]+|(?<=[.!;])\s+(?=[A-Z])")
 
 
 @dataclass
@@ -48,21 +142,80 @@ def _tokenize(text: str) -> list[str]:
     return [t.lower() for t in _TOKEN_RE.findall(text or "")]
 
 
+def strip_lead_ins(text: str, max_words: int = 5) -> str:
+    """
+    Remove up to ``max_words`` leading stock verbs/fillers from a line.
+
+    Examples:
+      "Demonstrated root cause analysis on ATE failures"
+        → "root cause analysis on ATE failures"
+      "Responsible for reviewing test socket designs"
+        → "test socket designs"
+      "Review and approve test socket designs"
+        → "test socket designs"
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+
+    # Drop bullet markers
+    cleaned = re.sub(r"^\s*(?:[-*•●▪◦]|\d+[.)])\s*", "", cleaned)
+    lower = cleaned.lower()
+
+    # Strip known multi-word phrases repeatedly from the front
+    changed = True
+    while changed:
+        changed = False
+        for phrase in _LEAD_IN_PHRASES:
+            if lower.startswith(phrase):
+                cleaned = cleaned[len(phrase) :].lstrip(" :,-")
+                lower = cleaned.lower()
+                changed = True
+                break
+
+    # Strip up to max_words single lead-in tokens (and joining words)
+    words = cleaned.split()
+    skipped = 0
+    while words and skipped < max_words:
+        bare = re.sub(r"[^a-zA-Z0-9+#.\-]", "", words[0]).lower()
+        if bare in _LEAD_IN_WORDS or bare in {"and", "or", "to", "of", "for", "the", "a", "an"}:
+            words.pop(0)
+            skipped += 1
+            continue
+        break
+
+    return " ".join(words).strip(" :,-")
+
+
+def normalize_for_matching(text: str) -> str:
+    """Normalize a full JD or resume by stripping lead-ins on each line/bullet."""
+    if not (text or "").strip():
+        return ""
+    parts: list[str] = []
+    for raw in _BULLET_SPLIT_RE.split(text):
+        line = raw.strip()
+        if not line:
+            continue
+        stripped = strip_lead_ins(line)
+        parts.append(stripped if stripped else line)
+    return "\n".join(parts)
+
+
 def extract_keywords(text: str, top_n: int = 40) -> list[str]:
-    """
-    Extract important keywords from text using TF-IDF over a single document
-    (term frequency with light filtering). Falls back to frequent tokens.
-    """
-    tokens = [t for t in _tokenize(text) if t not in _STOPWORDS and len(t) > 1]
+    """Extract important keywords after stripping stock lead-in verbs."""
+    normalized = normalize_for_matching(text)
+    tokens = [
+        t
+        for t in _tokenize(normalized)
+        if t not in _STOPWORDS and t not in _LEAD_IN_WORDS and len(t) > 1
+    ]
     if not tokens:
         return []
 
-    # Prefer multi-character technical terms and repeated skills
     freq: dict[str, int] = {}
     for token in tokens:
         freq[token] = freq.get(token, 0) + 1
 
-    # Score: frequency * length bonus for longer skill-like terms
     scored = sorted(
         freq.items(),
         key=lambda item: (item[1] * (1 + min(len(item[0]), 12) / 12), item[0]),
@@ -78,23 +231,30 @@ def _keyword_overlap(
     if not job_keywords:
         return 0.0, [], []
 
-    resume_tokens = set(_tokenize(resume_text))
+    # Match against lead-in-stripped resume text so "Demonstrated X" still hits X
+    resume_tokens = set(_tokenize(normalize_for_matching(resume_text)))
+    resume_tokens |= set(_tokenize(resume_text))
+
     matched: list[str] = []
     missing: list[str] = []
     for kw in job_keywords:
-        # Exact token match or substring for compounds like "machine-learning"
+        if kw in _LEAD_IN_WORDS:
+            continue
         if kw in resume_tokens or any(kw in token for token in resume_tokens):
             matched.append(kw)
         else:
             missing.append(kw)
 
-    overlap = (len(matched) / len(job_keywords)) * 100.0
+    denom = len(matched) + len(missing)
+    overlap = (len(matched) / denom) * 100.0 if denom else 0.0
     return overlap, matched, missing
 
 
 def _tfidf_similarity(job_text: str, resume_text: str) -> float:
-    """Cosine similarity of TF-IDF vectors, returned as a 0–100 percentage."""
-    if not job_text.strip() or not resume_text.strip():
+    """Cosine similarity after stripping stock lead-in verbs on both sides."""
+    job_norm = normalize_for_matching(job_text)
+    resume_norm = normalize_for_matching(resume_text)
+    if not job_norm.strip() or not resume_norm.strip():
         return 0.0
 
     vectorizer = TfidfVectorizer(
@@ -105,7 +265,7 @@ def _tfidf_similarity(job_text: str, resume_text: str) -> float:
         token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z0-9+#.\-]{1,}\b",
     )
     try:
-        matrix = vectorizer.fit_transform([job_text, resume_text])
+        matrix = vectorizer.fit_transform([job_norm, resume_norm])
     except ValueError:
         return 0.0
 
@@ -125,7 +285,8 @@ def score_resume(
     Score a single resume against a job description.
 
     Combined score = keyword_weight * keyword_overlap + (1 - keyword_weight) * tfidf.
-    A resume is greenlit when match_percent >= threshold.
+    Lead-in verbs ("Demonstrate", "Review", "Responsible for", …) are stripped
+    before keyword extraction and similarity so matching focuses on substance.
     """
     if not (job_description or "").strip():
         return MatchResult(

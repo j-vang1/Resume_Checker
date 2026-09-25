@@ -410,9 +410,9 @@ def main() -> None:
         st.markdown(
             f"""
             **Scoring (PR #1)**
-            - Keywords from the job description
-            - Keyword overlap with each resume
-            - TF-IDF cosine similarity
+            - Keywords from the job description (skips stock lead-ins)
+            - Reads past resume lead-ins like Demonstrate / Review / Responsible for
+            - Keyword overlap + TF-IDF similarity on the substance
             - Combined: `{keyword_weight:.0%} × keywords + {1 - keyword_weight:.0%} × similarity`
             - Greenlight if score ≥ **{threshold}%**
             """

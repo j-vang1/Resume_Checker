@@ -56,6 +56,41 @@ def test_detect_too_short():
     assert result["code"] == "unknown"
 
 
+def test_strips_lead_in_verbs_for_matching():
+    """JD 'Review/Demonstrate X' should align with resume 'Led/Demonstrated X'."""
+    from resume_matcher.matching import extract_keywords, score_resume, strip_lead_ins
+
+    assert "thermal plunger" in strip_lead_ins(
+        "Demonstrated thermal plunger design for ATE sockets"
+    ).lower()
+    assert "root cause" in strip_lead_ins(
+        "Responsible for reviewing root cause analysis on failures"
+    ).lower()
+    assert strip_lead_ins("Review and approve test socket designs").lower().startswith(
+        "test socket"
+    )
+
+    job = """
+    Review and approve the design of test socket and thermal plunger hardware.
+    Demonstrate root cause analysis on intermittent ATE failures.
+    Provide DOE for thermal stability characterization.
+    """
+    resume = """
+    - Led design of test socket and thermal plunger hardware for production ATE.
+    - Demonstrated root cause analysis on intermittent ATE failures across sites.
+    - Performed DOE for thermal stability characterization at -40C.
+    """
+    result = score_resume(job, resume, filename="ate.pdf", threshold=50)
+    assert "socket" in result.matched_keywords or "thermal" in result.matched_keywords
+    assert "plunger" in result.matched_keywords or "doe" in result.matched_keywords
+    assert result.match_percent >= 40
+
+    kws = extract_keywords(job)
+    assert "review" not in kws
+    assert "demonstrate" not in kws
+    assert "provide" not in kws
+
+
 def test_strong_resume_greenlit_at_50():
     result = score_resume(JOB_EN, RESUME_STRONG, filename="strong.pdf", threshold=50)
     assert result.match_percent >= 50
