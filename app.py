@@ -14,7 +14,12 @@ from pathlib import Path
 import streamlit as st
 
 from resume_matcher.language import detect_language
-from resume_matcher.matching import MatchResult, extract_keywords, score_resumes
+from resume_matcher.matching import (
+    MatchResult,
+    extract_keywords,
+    extract_phrases,
+    score_resumes,
+)
 from resume_matcher.parsers import (
     EmptyExtractError,
     UnsupportedFileTypeError,
@@ -77,17 +82,8 @@ def _short(text: str, limit: int = 90) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
-def _phrase_first(terms: list[str], limit: int = 10) -> list[str]:
-    """Prefer multi-word phrases so the board shows real phrases, not lone tokens."""
-    phrases = [t for t in terms if " " in (t or "").strip()]
-    singles = [t for t in terms if " " not in (t or "").strip()]
-    # If we have phrases, show those first; only pad with singles if needed
-    ordered = phrases + (singles if not phrases else singles[: max(0, 2)])
-    return ordered[:limit]
-
-
-def _join_phrases(terms: list[str], limit: int = 10) -> str:
-    picked = _phrase_first(terms, limit=limit)
+def _join_terms(terms: list[str], limit: int = 10) -> str:
+    picked = [t for t in terms if (t or "").strip()][:limit]
     return ", ".join(picked) if picked else "—"
 
 
@@ -104,9 +100,11 @@ def _board_records(results: list[MatchResult]) -> list[dict]:
                 "Candidate": r.filename,
                 "Gate": "GREENLIT" if r.greenlit else "BELOW",
                 "Keywords %": round(r.keyword_overlap_percent, 1),
+                "Phrases %": round(r.phrase_overlap_percent, 1),
                 "Similarity %": round(r.semantic_similarity_percent, 1),
-                "Matched phrases": _join_phrases(r.matched_keywords, limit=10),
-                "Missing phrases": _join_phrases(r.missing_keywords, limit=10),
+                "Matched keywords": _join_terms(r.matched_keywords, limit=8),
+                "Matched phrases": _join_terms(r.matched_phrases, limit=8),
+                "Missing phrases": _join_terms(r.missing_phrases, limit=8),
                 "_tier": tier,
             }
         )
@@ -143,6 +141,9 @@ def _show_board(results: list[MatchResult]) -> None:
                     "Score", min_value=0, max_value=100, format="%.0f", width="small"
                 ),
                 "Candidate": st.column_config.TextColumn("Candidate", width="large"),
+                "Matched keywords": st.column_config.TextColumn(
+                    "Matched keywords", width="medium"
+                ),
                 "Matched phrases": st.column_config.TextColumn(
                     "Matched phrases", width="large"
                 ),
@@ -163,7 +164,9 @@ def _board_csv(results: list[MatchResult]) -> str:
         "Candidate",
         "Gate",
         "Keywords %",
+        "Phrases %",
         "Similarity %",
+        "Matched keywords",
         "Matched phrases",
         "Missing phrases",
     ]
@@ -239,45 +242,69 @@ def _render_detail(result: MatchResult, threshold: float) -> None:
             <div class="score-big {score_cls}">{result.match_percent:.1f}%</div>
           </div>
           <div class="meta" style="margin-top:0.75rem;">
-            Keyword overlap: <b>{result.keyword_overlap_percent:.1f}%</b>
+            1. Keywords: <b>{result.keyword_overlap_percent:.1f}%</b>
             &nbsp;·&nbsp;
-            Text similarity: <b>{result.semantic_similarity_percent:.1f}%</b>
+            2. Phrases: <b>{result.phrase_overlap_percent:.1f}%</b>
+            &nbsp;·&nbsp;
+            3. Similarity: <b>{result.semantic_similarity_percent:.1f}%</b>
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # Always-visible phrases — no tab click required
-    matched = _phrase_first(result.matched_keywords, limit=40)
-    missing = _phrase_first(result.missing_keywords, limit=40)
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Matched phrases**")
-        if matched:
+    # Step results — keywords and phrases both visible
+    k1, k2 = st.columns(2)
+    with k1:
+        st.markdown("**1. Matched keywords**")
+        if result.matched_keywords:
             st.markdown(
-                " ".join(f'<span class="kw hit">{kw}</span>' for kw in matched),
+                " ".join(f'<span class="kw hit">{kw}</span>' for kw in result.matched_keywords),
                 unsafe_allow_html=True,
             )
         else:
             st.caption("None")
-    with c2:
-        st.markdown("**Missing phrases**")
-        if missing:
+        st.markdown("**Missing keywords**")
+        if result.missing_keywords:
             st.markdown(
-                " ".join(f'<span class="kw miss">{kw}</span>' for kw in missing),
+                " ".join(
+                    f'<span class="kw miss">{kw}</span>' for kw in result.missing_keywords[:30]
+                ),
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("None")
+    with k2:
+        st.markdown("**2. Matched phrases**")
+        if result.matched_phrases:
+            st.markdown(
+                " ".join(f'<span class="kw hit">{kw}</span>' for kw in result.matched_phrases),
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("None")
+        st.markdown("**Missing phrases**")
+        if result.missing_phrases:
+            st.markdown(
+                " ".join(
+                    f'<span class="kw miss">{kw}</span>' for kw in result.missing_phrases[:30]
+                ),
                 unsafe_allow_html=True,
             )
         else:
             st.caption("None")
 
-    with st.expander("Score breakdown", expanded=False):
+    with st.expander("3. Score breakdown (combined)", expanded=False):
         st.dataframe(
             [
-                {"Metric": "Match %", "Value": f"{result.match_percent:.1f}%"},
+                {"Metric": "Match % (combined)", "Value": f"{result.match_percent:.1f}%"},
                 {
-                    "Metric": "Keyword overlap",
+                    "Metric": "1. Keyword overlap",
                     "Value": f"{result.keyword_overlap_percent:.1f}%",
+                },
+                {
+                    "Metric": "2. Phrase overlap",
+                    "Value": f"{result.phrase_overlap_percent:.1f}%",
                 },
                 {
                     "Metric": "TF-IDF similarity",
@@ -395,8 +422,8 @@ def main() -> None:
 
     st.title("Resume Matcher")
     st.caption(
-        "Paste a job description, upload resumes, score keyword + TF-IDF match. "
-        "Screen with color-coded tables."
+        "Paste a job description, upload resumes, score in 3 steps: "
+        "keywords → phrases → combined result."
     )
 
     with st.sidebar:
@@ -410,21 +437,30 @@ def main() -> None:
             help="Resumes at or above this score are greenlit.",
         )
         keyword_weight = st.slider(
-            "Keyword weight",
+            "Lexical vs similarity weight",
             min_value=0.0,
             max_value=1.0,
             value=0.55,
             step=0.05,
-            help="1.0 = keywords only, 0.0 = TF-IDF similarity only.",
+            help="1.0 = keywords+phrases only, 0.0 = TF-IDF similarity only.",
+        )
+        phrase_weight = st.slider(
+            "Phrase vs keyword weight",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.55,
+            step=0.05,
+            help="Inside the lexical score: 1.0 = phrases only, 0.0 = single keywords only.",
         )
         st.divider()
         st.markdown(
             f"""
-            **Scoring (PR #1)**
-            - Keywords from the job description (skips stock lead-ins)
-            - Reads past resume lead-ins like Demonstrate / Review / Responsible for
-            - Keyword overlap + TF-IDF similarity on the substance
-            - Combined: `{keyword_weight:.0%} × keywords + {1 - keyword_weight:.0%} × similarity`
+            **Scoring steps**
+            1. **Keywords** — single-word overlap (after stripping lead-ins)
+            2. **Phrases** — 2–5 word phrase overlap
+            3. **Combined** —  
+               lexical = `{1 - phrase_weight:.0%}×keywords + {phrase_weight:.0%}×phrases`  
+               score = `{keyword_weight:.0%}×lexical + {1 - keyword_weight:.0%}×TF-IDF`  
             - Greenlight if score ≥ **{threshold}%**
             """
         )
@@ -451,12 +487,21 @@ def main() -> None:
             else:
                 st.info(lang.get("error") or "Could not detect language.")
             keywords = extract_keywords(job_text)
-            if keywords:
-                with st.expander("Detected phrases from JD", expanded=True):
-                    st.markdown(
-                        " ".join(f'<span class="kw">{kw}</span>' for kw in keywords),
-                        unsafe_allow_html=True,
-                    )
+            phrases = extract_phrases(job_text)
+            if keywords or phrases:
+                with st.expander("Detected from JD (step 1 keywords · step 2 phrases)", expanded=True):
+                    if keywords:
+                        st.caption("Keywords")
+                        st.markdown(
+                            " ".join(f'<span class="kw">{kw}</span>' for kw in keywords),
+                            unsafe_allow_html=True,
+                        )
+                    if phrases:
+                        st.caption("Phrases")
+                        st.markdown(
+                            " ".join(f'<span class="kw">{kw}</span>' for kw in phrases),
+                            unsafe_allow_html=True,
+                        )
 
     with right:
         st.subheader("Resumes")
@@ -517,6 +562,7 @@ def main() -> None:
                 resumes=parsed,
                 threshold=float(threshold),
                 keyword_weight=float(keyword_weight),
+                phrase_weight=float(phrase_weight),
             )
         st.session_state["results"] = results
         st.session_state["threshold"] = float(threshold)

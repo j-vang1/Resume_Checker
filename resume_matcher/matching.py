@@ -1,12 +1,13 @@
-"""Score resumes against a job description using keywords + TF-IDF similarity.
+"""Score resumes against a job description in three steps.
 
 Both JDs and resumes often lead bullets with stock verbs ("Demonstrate",
 "Review", "Responsible for", "Led", …). Matching reads past those lead-ins
 so similarity is judged on the substance that follows.
 
-Keywords prefer 2–5 word phrases (e.g. "test socket designs", "root cause
-analysis") so matched/missing results show real hiring phrases, not lone
-filler words. Strong skill unigrams (Python, ATE, …) still fill remaining slots.
+Scoring pipeline:
+  1. Keyword check — single-word skills/terms from the JD vs resume
+  2. Phrase check — 2–5 word phrases from the JD vs resume
+  3. Combined result — blend keyword overlap + phrase overlap + TF-IDF
 """
 
 from __future__ import annotations
@@ -148,9 +149,12 @@ class MatchResult:
     match_percent: float
     greenlit: bool
     keyword_overlap_percent: float
+    phrase_overlap_percent: float
     semantic_similarity_percent: float
     matched_keywords: list[str] = field(default_factory=list)
     missing_keywords: list[str] = field(default_factory=list)
+    matched_phrases: list[str] = field(default_factory=list)
+    missing_phrases: list[str] = field(default_factory=list)
     error: str | None = None
 
     def to_dict(self) -> dict:
@@ -419,52 +423,52 @@ def _extract_ngrams_from_span(tokens: list[str], n: int) -> list[str]:
     return out
 
 
-def extract_keywords(text: str, top_n: int = 40) -> list[str]:
-    """
-    Extract important keywords after stripping stock lead-in verbs.
-
-    Prefers 2–5 word phrases (e.g. "test socket designs", "root cause analysis")
-    so matched/missing UI shows real hiring phrases, not lone filler words.
-    Strong unigrams (skills, acronyms) fill remaining slots.
-    """
-    spans = _iter_phrase_spans(text)
-    if not spans:
-        return []
-
-    freq: dict[str, int] = {}
-    for tokens in spans:
-        for n in (5, 4, 3, 2, 1):
-            for gram in _extract_ngrams_from_span(tokens, n):
-                freq[gram] = freq.get(gram, 0) + 1
-
+def _rank_terms(freq: dict[str, int], top_n: int) -> list[str]:
     if not freq:
         return []
-
     scored = sorted(
         freq.items(),
         key=lambda item: (_phrase_score(item[0], item[1]), len(item[0].split()), item[0]),
         reverse=True,
     )
-
     selected: list[str] = []
     for term, _ in scored:
-        # Skip if this term is a sub-phrase of an already selected longer term
         if any(term != other and f" {term} " in f" {other} " for other in selected):
             continue
-        # Skip unigrams already covered by a selected phrase
         if " " not in term and any(term in other.split() for other in selected):
             continue
         selected.append(term)
         if len(selected) >= top_n:
             break
-
-    # Drop any leftover shorter phrase fully contained in a longer selected one
     selected = [
-        t
-        for t in selected
-        if not any(t != o and f" {t} " in f" {o} " for o in selected)
+        t for t in selected if not any(t != o and f" {t} " in f" {o} " for o in selected)
     ]
     return selected[:top_n]
+
+
+def extract_keywords(text: str, top_n: int = 40) -> list[str]:
+    """Step 1 terms: single-word keywords after stripping stock lead-in verbs."""
+    spans = _iter_phrase_spans(text)
+    if not spans:
+        return []
+    freq: dict[str, int] = {}
+    for tokens in spans:
+        for gram in _extract_ngrams_from_span(tokens, 1):
+            freq[gram] = freq.get(gram, 0) + 1
+    return _rank_terms(freq, top_n)
+
+
+def extract_phrases(text: str, top_n: int = 40) -> list[str]:
+    """Step 2 terms: 2–5 word phrases after stripping stock lead-in verbs."""
+    spans = _iter_phrase_spans(text)
+    if not spans:
+        return []
+    freq: dict[str, int] = {}
+    for tokens in spans:
+        for n in (5, 4, 3, 2):
+            for gram in _extract_ngrams_from_span(tokens, n):
+                freq[gram] = freq.get(gram, 0) + 1
+    return _rank_terms(freq, top_n)
 
 
 def _phrase_in_text(phrase: str, text: str) -> bool:
@@ -497,7 +501,6 @@ def _all_content_in_resume(phrase: str, resume_tokens: set[str], resume_text: st
         pattern = re.compile(rf"(?i)(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])")
         if pattern.search(resume_text or ""):
             continue
-        # Light plural tolerance
         if not token.endswith("s") and (token + "s") in resume_tokens:
             continue
         if token.endswith("s") and len(token) > 3 and token[:-1] in resume_tokens:
@@ -506,22 +509,20 @@ def _all_content_in_resume(phrase: str, resume_tokens: set[str], resume_text: st
     return True
 
 
-def _keyword_in_resume(kw: str, resume_text: str, resume_tokens: set[str]) -> bool:
+def _term_in_resume(term: str, resume_text: str, resume_tokens: set[str]) -> bool:
     """
-    True only if the keyword appears as a real whole word/phrase in the resume.
+    True only if the term appears as a real whole word/phrase in the resume.
 
-    Avoids false hits like keyword 'ate' matching inside 'evaluate'/'create',
-    or 'test' matching inside 'latest'. Multi-word phrases match on exact
-    phrase first, then on all content words present (whole-word).
+    Avoids false hits like keyword 'ate' matching inside 'evaluate'/'create'.
+    Multi-word phrases match on exact phrase first, then soft content-token match.
     """
-    if not kw:
+    if not term:
         return False
 
-    parts = kw.split()
+    parts = term.split()
     if len(parts) > 1:
-        if _phrase_in_text(kw, resume_text):
+        if _phrase_in_text(term, resume_text):
             return True
-        # Light plural tolerance on the last word: "test socket" vs "test sockets"
         last = parts[-1]
         if not last.endswith("s"):
             alt = " ".join(parts[:-1] + [last + "s"])
@@ -531,48 +532,44 @@ def _keyword_in_resume(kw: str, resume_text: str, resume_tokens: set[str]) -> bo
             alt = " ".join(parts[:-1] + [last[:-1]])
             if _phrase_in_text(alt, resume_text):
                 return True
-        # Soft match: all content tokens present as whole words
-        if _all_content_in_resume(kw, resume_tokens, resume_text):
+        if _all_content_in_resume(term, resume_tokens, resume_text):
             return True
         return False
 
-    if kw in resume_tokens:
+    if term in resume_tokens:
         return True
 
-    # Hyphen/slash compounds: "signal-integrity" or token "machine-learning"
     for token in resume_tokens:
         if "-" in token or "/" in token or "." in token:
             compound_parts = re.split(r"[-/.]", token)
-            if kw in compound_parts:
+            if term in compound_parts:
                 return True
 
-    # Whole-word search in original text
-    pattern = re.compile(rf"(?i)(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])")
+    pattern = re.compile(rf"(?i)(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])")
     if pattern.search(resume_text or ""):
         return True
 
-    # Simple plural: keyword "socket" vs resume "sockets"
-    if not kw.endswith("s"):
-        plural = kw + "s"
+    if not term.endswith("s"):
+        plural = term + "s"
         if plural in resume_tokens:
             return True
         if re.compile(rf"(?i)(?<![a-z0-9]){re.escape(plural)}(?![a-z0-9])").search(
             resume_text or ""
         ):
             return True
-    elif kw.endswith("s") and len(kw) > 3:
-        singular = kw[:-1]
+    elif term.endswith("s") and len(term) > 3:
+        singular = term[:-1]
         if singular in resume_tokens:
             return True
 
     return False
 
 
-def _keyword_overlap(
-    job_keywords: list[str], resume_text: str
+def _overlap_check(
+    terms: list[str], resume_text: str
 ) -> tuple[float, list[str], list[str]]:
-    """Return overlap %, matched keywords, and missing keywords."""
-    if not job_keywords:
+    """Return overlap %, matched terms, and missing terms for a term list."""
+    if not terms:
         return 0.0, [], []
 
     normalized_resume = normalize_for_matching(resume_text)
@@ -580,19 +577,24 @@ def _keyword_overlap(
 
     matched: list[str] = []
     missing: list[str] = []
-    for kw in job_keywords:
-        if not _is_usable_keyword(kw):
+    for term in terms:
+        if not _is_usable_keyword(term):
             continue
-        if _keyword_in_resume(kw, resume_text, resume_tokens) or _keyword_in_resume(
-            kw, normalized_resume, resume_tokens
+        if _term_in_resume(term, resume_text, resume_tokens) or _term_in_resume(
+            term, normalized_resume, resume_tokens
         ):
-            matched.append(kw)
+            matched.append(term)
         else:
-            missing.append(kw)
+            missing.append(term)
 
     denom = len(matched) + len(missing)
     overlap = (len(matched) / denom) * 100.0 if denom else 0.0
     return overlap, matched, missing
+
+
+# Back-compat aliases used by older tests
+_keyword_in_resume = _term_in_resume
+_keyword_overlap = _overlap_check
 
 
 def _tfidf_similarity(job_text: str, resume_text: str) -> float:
@@ -624,51 +626,71 @@ def score_resume(
     filename: str = "resume",
     threshold: float = 50.0,
     keyword_weight: float = 0.55,
+    phrase_weight: float = 0.55,
     job_keywords: list[str] | None = None,
+    job_phrases: list[str] | None = None,
 ) -> MatchResult:
     """
-    Score a single resume against a job description.
+    Score a resume in three steps:
 
-    Combined score = keyword_weight * keyword_overlap + (1 - keyword_weight) * tfidf.
-    Lead-in verbs ("Demonstrate", "Review", "Responsible for", …) are stripped
-    before keyword extraction and similarity so matching focuses on substance.
+    1. Keyword check — single-word overlap vs the JD
+    2. Phrase check — 2–5 word phrase overlap vs the JD
+    3. Combined — blend keyword + phrase overlaps, then mix with TF-IDF
+
+    ``phrase_weight`` controls keyword vs phrase inside the lexical blend
+    (default 0.55 → phrases count a bit more than single keywords).
+    ``keyword_weight`` is the lexical vs TF-IDF slider from the UI.
     """
+    empty = MatchResult(
+        filename=filename,
+        match_percent=0.0,
+        greenlit=False,
+        keyword_overlap_percent=0.0,
+        phrase_overlap_percent=0.0,
+        semantic_similarity_percent=0.0,
+    )
     if not (job_description or "").strip():
-        return MatchResult(
-            filename=filename,
-            match_percent=0.0,
-            greenlit=False,
-            keyword_overlap_percent=0.0,
-            semantic_similarity_percent=0.0,
-            error="Job description is empty.",
-        )
-
+        empty.error = "Job description is empty."
+        return empty
     if not (resume_text or "").strip():
-        return MatchResult(
-            filename=filename,
-            match_percent=0.0,
-            greenlit=False,
-            keyword_overlap_percent=0.0,
-            semantic_similarity_percent=0.0,
-            error="Could not extract text from this resume.",
-        )
+        empty.error = "Could not extract text from this resume."
+        return empty
 
+    # Step 1 — keywords
     keywords = job_keywords if job_keywords is not None else extract_keywords(job_description)
-    overlap, matched, missing = _keyword_overlap(keywords, resume_text)
-    semantic = _tfidf_similarity(job_description, resume_text)
+    kw_overlap, matched_kw, missing_kw = _overlap_check(keywords, resume_text)
 
-    weight = float(np.clip(keyword_weight, 0.0, 1.0))
-    combined = weight * overlap + (1.0 - weight) * semantic
+    # Step 2 — phrases
+    phrases = job_phrases if job_phrases is not None else extract_phrases(job_description)
+    ph_overlap, matched_ph, missing_ph = _overlap_check(phrases, resume_text)
+
+    # Step 3 — combine keyword + phrase, then mix with TF-IDF
+    semantic = _tfidf_similarity(job_description, resume_text)
+    pw = float(np.clip(phrase_weight, 0.0, 1.0))
+    if keywords and phrases:
+        lexical = (1.0 - pw) * kw_overlap + pw * ph_overlap
+    elif phrases:
+        lexical = ph_overlap
+    elif keywords:
+        lexical = kw_overlap
+    else:
+        lexical = 0.0
+
+    lw = float(np.clip(keyword_weight, 0.0, 1.0))
+    combined = lw * lexical + (1.0 - lw) * semantic
     combined = round(float(combined), 1)
 
     return MatchResult(
         filename=filename,
         match_percent=combined,
         greenlit=combined >= threshold,
-        keyword_overlap_percent=round(overlap, 1),
+        keyword_overlap_percent=round(kw_overlap, 1),
+        phrase_overlap_percent=round(ph_overlap, 1),
         semantic_similarity_percent=round(semantic, 1),
-        matched_keywords=matched,
-        missing_keywords=missing,
+        matched_keywords=matched_kw,
+        missing_keywords=missing_kw,
+        matched_phrases=matched_ph,
+        missing_phrases=missing_ph,
     )
 
 
@@ -677,12 +699,16 @@ def score_resumes(
     resumes: list[tuple[str, str]],
     threshold: float = 50.0,
     keyword_weight: float = 0.55,
+    phrase_weight: float = 0.55,
 ) -> list[MatchResult]:
     """
     Score many resumes. ``resumes`` is a list of (filename, text) pairs.
-    Results are sorted by match_percent descending.
+
+    Extracts keywords and phrases once from the JD, then runs the 3-step
+    scorer on each resume. Results are sorted by match_percent descending.
     """
     keywords = extract_keywords(job_description)
+    phrases = extract_phrases(job_description)
     results = [
         score_resume(
             job_description=job_description,
@@ -690,7 +716,9 @@ def score_resumes(
             filename=name,
             threshold=threshold,
             keyword_weight=keyword_weight,
+            phrase_weight=phrase_weight,
             job_keywords=keywords,
+            job_phrases=phrases,
         )
         for name, text in resumes
     ]
