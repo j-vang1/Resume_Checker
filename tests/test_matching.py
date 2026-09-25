@@ -133,6 +133,13 @@ def test_no_false_substring_keyword_matches():
     )
     assert "ate" not in result.matched_keywords
     assert "socket" not in result.matched_keywords
+
+
+def test_strong_resume_greenlit_at_50():
+    result = score_resume(JOB_EN, RESUME_STRONG, filename="strong.pdf", threshold=50)
+    assert result.match_percent >= 50
+    assert result.greenlit is True
+    assert "python" in result.matched_keywords
     result = score_resume(JOB_EN, RESUME_STRONG, filename="strong.pdf", threshold=50)
     assert result.match_percent >= 50
     assert result.greenlit is True
