@@ -37,6 +37,8 @@ class MatchReport:
     score_explanation: str
     core_strengths: list[str]
     major_gaps: list[str]
+    strength_table: list[dict]
+    gap_table: list[dict]
     requirement_coverage: list[dict]
     evidence_graph: list[dict]
     technical_analysis: list[dict]
@@ -154,28 +156,61 @@ def _coverage_rows(graph: list[RequirementEvidence]) -> list[dict]:
     return rows
 
 
-def _core_strengths(graph: list[RequirementEvidence]) -> list[str]:
-    out = []
+def _short(text: str, limit: int = 90) -> str:
+    text = re.sub(r"\s+", " ", (text or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _core_strength_rows(graph: list[RequirementEvidence]) -> list[dict]:
+    rows = []
     for node in graph:
-        if node.strength in {EvidenceStrength.STRONG, EvidenceStrength.VERY_STRONG}:
-            sample = node.evidence[0].bullet if node.evidence else ""
-            out.append(
-                f"{node.requirement}: {node.strength.value}"
-                + (f' — e.g. “{sample[:100]}”' if sample else "")
-            )
-    return out[:8]
+        if node.strength not in {EvidenceStrength.STRONG, EvidenceStrength.VERY_STRONG}:
+            continue
+        sample = node.evidence[0].bullet if node.evidence else ""
+        rows.append(
+            {
+                "Requirement": _short(node.requirement, 70),
+                "Importance": node.importance,
+                "Strength": node.strength.value.replace(" Evidence", ""),
+                "Evidence": _short(sample, 100) if sample else "—",
+            }
+        )
+    return rows[:12]
 
 
-def _major_gaps(graph: list[RequirementEvidence]) -> list[str]:
-    out = []
+def _major_gap_rows(graph: list[RequirementEvidence]) -> list[dict]:
+    rows = []
     for node in graph:
         if node.importance not in {Importance.CORE.value, Importance.IMPORTANT.value}:
             continue
-        if node.strength in {EvidenceStrength.NONE, EvidenceStrength.WEAK}:
-            out.append(
-                f"{node.requirement} ({node.importance}): {node.notes}"
-            )
-    return out[:8]
+        if node.strength not in {EvidenceStrength.NONE, EvidenceStrength.WEAK}:
+            continue
+        rows.append(
+            {
+                "Requirement": _short(node.requirement, 70),
+                "Importance": node.importance,
+                "Strength": node.strength.value.replace(" Evidence", ""),
+                "Gap": _short(node.notes, 110),
+            }
+        )
+    return rows[:12]
+
+
+def _core_strengths(graph: list[RequirementEvidence]) -> list[str]:
+    return [
+        f"{r['Requirement']}: {r['Strength']}"
+        + (f" — e.g. “{r['Evidence']}”" if r["Evidence"] != "—" else "")
+        for r in _core_strength_rows(graph)
+    ]
+
+
+def _major_gaps(graph: list[RequirementEvidence]) -> list[str]:
+    return [
+        f"{r['Requirement']} ({r['Importance']}): {r['Gap']}"
+        for r in _major_gap_rows(graph)
+    ]
 
 
 def _transferable(graph: list[RequirementEvidence]) -> list[str]:
@@ -396,6 +431,8 @@ def build_report(
         score_explanation=explanation,
         core_strengths=_core_strengths(evidence_graph),
         major_gaps=_major_gaps(evidence_graph),
+        strength_table=_core_strength_rows(evidence_graph),
+        gap_table=_major_gap_rows(evidence_graph),
         requirement_coverage=_coverage_rows(evidence_graph),
         evidence_graph=[e.to_dict() for e in evidence_graph],
         technical_analysis=[b.to_dict() for b in bullet_analyses],
