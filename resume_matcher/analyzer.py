@@ -96,6 +96,8 @@ def _empty_report(filename: str, threshold: float, error: str) -> MatchReport:
         score_explanation=error,
         core_strengths=[],
         major_gaps=[error],
+        strength_table=[],
+        gap_table=[],
         requirement_coverage=[],
         evidence_graph=[],
         technical_analysis=[],

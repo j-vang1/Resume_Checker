@@ -231,7 +231,21 @@ def build_evidence_graph(
 ) -> list[RequirementEvidence]:
     """For each important requirement, find supporting resume evidence."""
     results: list[RequirementEvidence] = []
-    bullets = resume.bullets or [Bullet(text=resume.raw_text[:500], section="experience")]
+    # Prefer experience/project bullets; never use raw skills-list lines as "evidence"
+    bullets = [
+        b
+        for b in (resume.bullets or [])
+        if b.section in {"experience", "projects", "summary"}
+        and not re.match(r"(?i)^skills?\b", b.text.strip())
+    ]
+    if not bullets:
+        bullets = [
+            b
+            for b in (resume.bullets or [])
+            if b.section != "skills" and len(b.text) > 40
+        ]
+    if not bullets and resume.raw_text.strip():
+        bullets = [Bullet(text=resume.raw_text[:500], section="experience")]
 
     scored_reqs = [r for r in requirements if r.importance != Importance.GENERIC]
     for req in scored_reqs:

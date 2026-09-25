@@ -58,6 +58,108 @@ def _pill(label: str, value: str) -> str:
     return f'<span class="pill {cls}">{label}: {value}</span>'
 
 
+def _short(text: str, limit: int = 90) -> str:
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _strength_label(raw: str) -> str:
+    return (
+        (raw or "")
+        .replace(" Evidence", "")
+        .replace("No Evidence", "None")
+    )
+
+
+def _show_table(rows: list[dict], empty_message: str = "None identified") -> None:
+    if not rows:
+        st.caption(empty_message)
+        return
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+def _overview_alignment_table(report: MatchReport) -> list[dict]:
+    return [
+        {"Dimension": "Overall role alignment", "Rating": report.overall.get("overall_role_alignment", "—")},
+        {"Dimension": "Core requirement coverage", "Rating": report.overall.get("core_requirement_coverage", "—")},
+        {"Dimension": "Technical depth", "Rating": report.overall.get("technical_depth", "—")},
+        {"Dimension": "Experience relevance", "Rating": report.overall.get("experience_relevance", "—")},
+        {"Dimension": "Demonstrated impact", "Rating": report.overall.get("demonstrated_impact", "—")},
+        {
+            "Dimension": "Seniority alignment",
+            "Rating": report.overall.get(
+                "seniority_alignment", report.seniority.get("alignment", "—")
+            ),
+        },
+        {
+            "Dimension": "ATS compatibility",
+            "Rating": report.overall.get("ats_compatibility", report.ats.get("rating", "—")),
+        },
+    ]
+
+
+def _coverage_table(report: MatchReport) -> list[dict]:
+    return [
+        {
+            "Requirement": _short(r["requirement"], 65),
+            "Importance": r["importance"],
+            "Strength": _strength_label(r["strength"]),
+            "Evidence": _short(r.get("evidence_summary", "—"), 85),
+            "Notes": _short(r.get("notes", ""), 70),
+        }
+        for r in report.requirement_coverage
+    ]
+
+
+def _evidence_flat_table(report: MatchReport) -> list[dict]:
+    rows: list[dict] = []
+    for node in report.evidence_graph:
+        if node.get("importance") == "Generic":
+            continue
+        if not node.get("evidence"):
+            rows.append(
+                {
+                    "Requirement": _short(node["requirement"], 55),
+                    "Importance": node["importance"],
+                    "Strength": _strength_label(node["strength"]),
+                    "Resume evidence": "—",
+                    "Ownership": "—",
+                    "Depth": "—",
+                    "Impact": "—",
+                }
+            )
+            continue
+        for ev in node["evidence"][:3]:
+            rows.append(
+                {
+                    "Requirement": _short(node["requirement"], 55),
+                    "Importance": node["importance"],
+                    "Strength": _strength_label(node["strength"]),
+                    "Resume evidence": _short(ev["bullet"], 95),
+                    "Ownership": ev.get("ownership", "—"),
+                    "Depth": ev.get("technical_depth", "—"),
+                    "Impact": ev.get("impact", "—"),
+                }
+            )
+    return rows
+
+
+def _bullet_table(report: MatchReport) -> list[dict]:
+    return [
+        {
+            "Bullet": _short(b["bullet"], 90),
+            "Relevance": b["relevance"],
+            "Depth": b["technical_depth"],
+            "Ownership": b["ownership"],
+            "Impact": b["impact"],
+            "Feedback": _short(b["feedback"], 80),
+        }
+        for b in report.bullet_analyses
+    ]
+
+
 def _render_report(report: MatchReport) -> None:
     green = report.greenlit
     card = "greenlit" if green else "rejected"
@@ -102,118 +204,119 @@ def _render_report(report: MatchReport) -> None:
     )
 
     with tab_overview:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("#### Core strengths")
-            for s in report.core_strengths or ["None identified"]:
-                st.markdown(f"- {s}")
-        with c2:
-            st.markdown("#### Major gaps")
-            for g in report.major_gaps or ["None identified"]:
-                st.markdown(f"- {g}")
+        st.markdown("#### Alignment summary")
+        _show_table(_overview_alignment_table(report))
+
+        st.markdown("#### Core strengths")
+        strength_rows = report.strength_table or [
+            {
+                "Requirement": _short(s.split(":")[0], 70),
+                "Importance": "—",
+                "Strength": "Strong",
+                "Evidence": _short(s, 100),
+            }
+            for s in report.core_strengths
+        ]
+        _show_table(strength_rows)
+
+        st.markdown("#### Major gaps")
+        gap_rows = report.gap_table or (
+            [{"Requirement": "—", "Importance": "—", "Strength": "—", "Gap": g} for g in report.major_gaps]
+            if report.major_gaps
+            else []
+        )
+        _show_table(gap_rows)
 
         st.markdown("#### Seniority alignment")
-        st.write(report.seniority.get("notes", ""))
-        if report.seniority.get("signals"):
-            st.caption("Signals: " + "; ".join(report.seniority["signals"]))
+        _show_table(
+            [
+                {
+                    "Target level": report.seniority.get("target_level", "—"),
+                    "Demonstrated": report.seniority.get("demonstrated_level", "—"),
+                    "Alignment": report.seniority.get("alignment", "—"),
+                    "Notes": _short(report.seniority.get("notes", ""), 120),
+                }
+            ]
+        )
 
         st.markdown("#### Transferable skills")
-        for s in report.transferable_skills[:8] or ["None highlighted"]:
-            st.markdown(f"- {s}")
+        _show_table(
+            [{"Skill / concept": _short(s, 140)} for s in report.transferable_skills[:10]],
+            empty_message="None highlighted",
+        )
 
         st.markdown("#### Impact / accomplishment analysis")
-        for s in report.impact_analysis or ["Limited measurable impact language"]:
-            st.markdown(f"- {s}")
+        _show_table(
+            [{"Finding": s} for s in report.impact_analysis],
+            empty_message="Limited measurable impact language",
+        )
 
     with tab_coverage:
-        if report.requirement_coverage:
-            st.dataframe(
-                [
-                    {
-                        "Requirement": r["requirement"][:80],
-                        "Importance": r["importance"],
-                        "Evidence": r["evidence_summary"][:100],
-                        "Strength": r["strength"],
-                        "Notes": r["notes"][:100],
-                    }
-                    for r in report.requirement_coverage
-                ],
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.info("No requirements parsed.")
+        _show_table(_coverage_table(report), empty_message="No requirements parsed.")
 
     with tab_evidence:
-        for node in report.evidence_graph:
-            if node["importance"] == "Generic":
-                continue
-            with st.expander(
-                f"{node['requirement'][:70]} · {node['importance']} · {node['strength']}",
-                expanded=node["importance"] == "Core",
-            ):
-                if node["related_concepts"]:
-                    st.caption("Related concepts: " + ", ".join(node["related_concepts"][:10]))
-                if not node["evidence"]:
-                    st.write("No supporting resume evidence found.")
-                for ev in node["evidence"]:
-                    st.markdown(f"- “{ev['bullet']}”")
-                    st.caption(
-                        f"Relevance {ev['relevance']:.2f} · Ownership {ev['ownership']} · "
-                        f"Depth {ev['technical_depth']} · Impact {ev['impact']}"
-                    )
-                st.write(node["notes"])
+        st.markdown("#### Evidence by requirement")
+        _show_table(_evidence_flat_table(report), empty_message="No evidence graph available.")
 
         st.markdown("#### Bullet-level analysis")
-        for b in report.bullet_analyses:
-            with st.expander(b["bullet"][:90] + ("…" if len(b["bullet"]) > 90 else "")):
-                st.write(
-                    f"Relevance: **{b['relevance']}** · Depth: **{b['technical_depth']}** · "
-                    f"Ownership: **{b['ownership']}** · Impact: **{b['impact']}** · "
-                    f"Clarity: **{b['clarity']}** · Specificity: **{b['specificity']}**"
-                )
-                st.write(b["feedback"])
+        _show_table(_bullet_table(report), empty_message="No bullets analyzed.")
 
     with tab_improve:
         st.markdown("#### Top resume improvements")
-        for i, item in enumerate(report.improvements, 1):
-            st.markdown(f"{i}. {item}")
+        _show_table(
+            [{"#": i, "Improvement": item} for i, item in enumerate(report.improvements, 1)],
+            empty_message="No priority improvements identified.",
+        )
 
         st.markdown("#### Missing-evidence recommendations")
-        for m in report.missing_evidence or ["None"]:
-            st.markdown(f"- {m}")
+        _show_table(
+            [{"Recommendation": m} for m in report.missing_evidence],
+            empty_message="None",
+        )
 
         st.markdown("#### Bullet rewrite opportunities")
         st.caption("Preserves your experience — never invents metrics, tech, or ownership.")
-        for r in report.rewrites:
-            st.markdown(f"**Original:** {r['original']}")
-            st.markdown(f"**Improved structure:** {r['improved_structure']}")
-            if r.get("needs_from_candidate"):
-                st.caption("Still needed from you: " + "; ".join(r["needs_from_candidate"]))
-            st.divider()
+        _show_table(
+            [
+                {
+                    "Original": _short(r["original"], 80),
+                    "Improved structure": _short(r["improved_structure"], 120),
+                    "Still needed from you": _short(
+                        "; ".join(r.get("needs_from_candidate") or []), 80
+                    ),
+                }
+                for r in report.rewrites
+            ],
+            empty_message="No rewrite suggestions.",
+        )
 
         if report.unsupported_claims:
             st.markdown("#### Weak or unsupported claims")
-            for c in report.unsupported_claims:
-                st.markdown(f"- **{c['skill']}** — {c['note']}")
+            _show_table(
+                [{"Skill": c["skill"], "Note": c["note"]} for c in report.unsupported_claims]
+            )
 
     with tab_ats:
-        st.markdown(f"**ATS compatibility:** {report.ats.get('rating')} ({report.ats.get('score')}/100)")
+        st.markdown(
+            f"**ATS compatibility:** {report.ats.get('rating')} ({report.ats.get('score')}/100)"
+        )
         st.caption(report.ats.get("notes", ""))
-        if report.ats.get("positives"):
-            st.markdown("Positives")
-            for p in report.ats["positives"]:
-                st.markdown(f"- {p}")
-        if report.ats.get("findings"):
-            st.markdown("Findings")
-            for f in report.ats["findings"]:
-                st.markdown(f"- {f}")
+        ats_rows = [{"Type": "Positive", "Detail": p} for p in report.ats.get("positives") or []]
+        ats_rows += [{"Type": "Finding", "Detail": f} for f in report.ats.get("findings") or []]
+        _show_table(ats_rows, empty_message="No ATS notes.")
+
         st.markdown("#### Consistency review items")
-        if report.consistency_issues:
-            for i in report.consistency_issues:
-                st.markdown(f"- ({i['severity']}) {i['detail']}")
-        else:
-            st.write("None flagged.")
+        _show_table(
+            [
+                {
+                    "Severity": i.get("severity", "review"),
+                    "Kind": i.get("kind", "—"),
+                    "Detail": _short(i.get("detail", ""), 120),
+                }
+                for i in report.consistency_issues
+            ],
+            empty_message="None flagged.",
+        )
 
     with tab_raw:
         st.download_button(
