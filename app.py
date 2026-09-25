@@ -77,6 +77,20 @@ def _short(text: str, limit: int = 90) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _phrase_first(terms: list[str], limit: int = 10) -> list[str]:
+    """Prefer multi-word phrases so the board shows real phrases, not lone tokens."""
+    phrases = [t for t in terms if " " in (t or "").strip()]
+    singles = [t for t in terms if " " not in (t or "").strip()]
+    # If we have phrases, show those first; only pad with singles if needed
+    ordered = phrases + (singles if not phrases else singles[: max(0, 2)])
+    return ordered[:limit]
+
+
+def _join_phrases(terms: list[str], limit: int = 10) -> str:
+    picked = _phrase_first(terms, limit=limit)
+    return ", ".join(picked) if picked else "—"
+
+
 def _board_records(results: list[MatchResult]) -> list[dict]:
     rows = []
     for i, r in enumerate(results, 1):
@@ -91,8 +105,8 @@ def _board_records(results: list[MatchResult]) -> list[dict]:
                 "Gate": "GREENLIT" if r.greenlit else "BELOW",
                 "Keywords %": round(r.keyword_overlap_percent, 1),
                 "Similarity %": round(r.semantic_similarity_percent, 1),
-                "Matched": ", ".join(r.matched_keywords[:8]) or "—",
-                "Missing": ", ".join(r.missing_keywords[:8]) or "—",
+                "Matched phrases": _join_phrases(r.matched_keywords, limit=10),
+                "Missing phrases": _join_phrases(r.missing_keywords, limit=10),
                 "_tier": tier,
             }
         )
@@ -129,8 +143,12 @@ def _show_board(results: list[MatchResult]) -> None:
                     "Score", min_value=0, max_value=100, format="%.0f", width="small"
                 ),
                 "Candidate": st.column_config.TextColumn("Candidate", width="large"),
-                "Matched": st.column_config.TextColumn("Matched", width="medium"),
-                "Missing": st.column_config.TextColumn("Missing", width="medium"),
+                "Matched phrases": st.column_config.TextColumn(
+                    "Matched phrases", width="large"
+                ),
+                "Missing phrases": st.column_config.TextColumn(
+                    "Missing phrases", width="large"
+                ),
             },
         )
     except Exception:  # noqa: BLE001
@@ -146,8 +164,8 @@ def _board_csv(results: list[MatchResult]) -> str:
         "Gate",
         "Keywords %",
         "Similarity %",
-        "Matched",
-        "Missing",
+        "Matched phrases",
+        "Missing phrases",
     ]
     writer = csv.DictWriter(buf, fieldnames=fieldnames)
     writer.writeheader()
@@ -230,14 +248,33 @@ def _render_detail(result: MatchResult, threshold: float) -> None:
         unsafe_allow_html=True,
     )
 
-    tab_overview, tab_keywords = st.tabs(["Overview", "Keywords"])
-    with tab_overview:
+    # Always-visible phrases — no tab click required
+    matched = _phrase_first(result.matched_keywords, limit=40)
+    missing = _phrase_first(result.missing_keywords, limit=40)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Matched phrases**")
+        if matched:
+            st.markdown(
+                " ".join(f'<span class="kw hit">{kw}</span>' for kw in matched),
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("None")
+    with c2:
+        st.markdown("**Missing phrases**")
+        if missing:
+            st.markdown(
+                " ".join(f'<span class="kw miss">{kw}</span>' for kw in missing),
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("None")
+
+    with st.expander("Score breakdown", expanded=False):
         st.dataframe(
             [
-                {
-                    "Metric": "Match %",
-                    "Value": f"{result.match_percent:.1f}%",
-                },
+                {"Metric": "Match %", "Value": f"{result.match_percent:.1f}%"},
                 {
                     "Metric": "Keyword overlap",
                     "Value": f"{result.keyword_overlap_percent:.1f}%",
@@ -246,38 +283,12 @@ def _render_detail(result: MatchResult, threshold: float) -> None:
                     "Metric": "TF-IDF similarity",
                     "Value": f"{result.semantic_similarity_percent:.1f}%",
                 },
-                {
-                    "Metric": "Greenlit",
-                    "Value": "Yes" if result.greenlit else "No",
-                },
-                {
-                    "Metric": "Fit tier",
-                    "Value": _fit_label(_fit_tier(result)),
-                },
+                {"Metric": "Greenlit", "Value": "Yes" if result.greenlit else "No"},
+                {"Metric": "Fit tier", "Value": _fit_label(_fit_tier(result))},
             ],
             use_container_width=True,
             hide_index=True,
         )
-    with tab_keywords:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**Matched keywords**")
-            if result.matched_keywords:
-                st.markdown(
-                    " ".join(f'<span class="kw hit">{kw}</span>' for kw in result.matched_keywords),
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.caption("None")
-        with c2:
-            st.markdown("**Missing from resume**")
-            if result.missing_keywords:
-                st.markdown(
-                    " ".join(f'<span class="kw miss">{kw}</span>' for kw in result.missing_keywords),
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.caption("None")
 
 
 def _render_results(results: list[MatchResult], threshold: float) -> None:
@@ -441,7 +452,7 @@ def main() -> None:
                 st.info(lang.get("error") or "Could not detect language.")
             keywords = extract_keywords(job_text)
             if keywords:
-                with st.expander("Detected keywords", expanded=False):
+                with st.expander("Detected phrases from JD", expanded=True):
                     st.markdown(
                         " ".join(f'<span class="kw">{kw}</span>' for kw in keywords),
                         unsafe_allow_html=True,

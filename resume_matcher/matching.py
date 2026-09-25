@@ -3,6 +3,10 @@
 Both JDs and resumes often lead bullets with stock verbs ("Demonstrate",
 "Review", "Responsible for", "Led", …). Matching reads past those lead-ins
 so similarity is judged on the substance that follows.
+
+Keywords prefer 2–5 word phrases (e.g. "test socket designs", "root cause
+analysis") so matched/missing results show real hiring phrases, not lone
+filler words. Strong skill unigrams (Python, ATE, …) still fill remaining slots.
 """
 
 from __future__ import annotations
@@ -111,6 +115,21 @@ _LEAD_IN_PHRASES = tuple(
             "duties included",
             "tasks included",
             "successfully",
+            "we are hiring a",
+            "we are hiring an",
+            "we are hiring",
+            "we are looking for a",
+            "we are looking for an",
+            "we are looking for",
+            "looking for a",
+            "looking for an",
+            "looking for",
+            "candidates should know",
+            "candidate should know",
+            "you will",
+            "you will be",
+            "the ideal candidate",
+            "ideal candidate",
         ],
         key=len,
         reverse=True,
@@ -244,56 +263,290 @@ _SHORT_TECH = frozenset(
 )
 
 
-def _is_usable_keyword(token: str) -> bool:
-    if not token or token in _STOPWORDS or token in _LEAD_IN_WORDS:
+# Generic single words that rarely carry hiring signal alone
+_WEAK_UNIGRAMS = frozenset(
+    """
+    related community services company management materials abilities programs
+    reports program process current following force home effectiveness
+    orientation evaluations guidelines activities potential licensing essential
+    campaigns tracking pipeline meetings internal families records source
+    pounds needed requirements mentors network job marketing role team teams
+    including based using make made making other others also well good great
+    high low new old year years month months day days time times level levels
+    type types area areas part parts way ways candidate candidates position
+    positions description descriptions
+    """.split()
+)
+
+
+def _is_usable_token(token: str) -> bool:
+    """True if a single token can appear as content inside a phrase keyword.
+
+    Lead-in verbs are stripped at line starts separately; a small set of
+    noun-like lead-in forms (e.g. "designs") may still appear mid-phrase.
+    """
+    if not token or token in _STOPWORDS:
         return False
     if token in _SHORT_TECH:
         return True
-    # Drop tiny fragments that cause false substring hits
     if len(token) < 3:
         return False
     return True
 
 
-def extract_keywords(text: str, top_n: int = 40) -> list[str]:
-    """Extract important keywords after stripping stock lead-in verbs."""
+# Lead-in tokens that are also common nouns and OK mid/end of a phrase
+_LEAD_IN_OK_IN_PHRASE = frozenset(
+    """
+    design designs support management process report reports lead drive
+    control controls review reviews build builds
+    """.split()
+)
+
+
+# Words that must not appear inside a phrase keyword (fillers / conjunctions)
+_PHRASE_BLOCKLIST = frozenset(
+    {
+        "and",
+        "or",
+        "with",
+        "without",
+        "within",
+        "across",
+        "via",
+        "per",
+        "vs",
+        "versus",
+        "including",
+        "such",
+        "also",
+        "etc",
+        "hiring",
+        "looking",
+        "candidates",
+        "candidate",
+        "know",
+        "should",
+        "must",
+        "please",
+        "ideal",
+    }
+)
+
+
+def _is_usable_keyword(term: str) -> bool:
+    """True if a keyword term (1–5 words) is worth matching on."""
+    if not term:
+        return False
+    parts = [p for p in term.split() if p]
+    if not parts or len(parts) > 5:
+        return False
+    if len(parts) == 1:
+        token = parts[0]
+        if not _is_usable_token(token):
+            return False
+        # Lone lead-in verbs / weak fillers are not useful keywords
+        if token in _LEAD_IN_WORDS or token in _WEAK_UNIGRAMS or token in _PHRASE_BLOCKLIST:
+            return False
+        return True
+    # Phrases: no stopwords / blockers; don't start on a stock lead-in verb
+    if parts[0] in _LEAD_IN_WORDS or parts[0] in _PHRASE_BLOCKLIST:
+        return False
+    for p in parts:
+        if p in _PHRASE_BLOCKLIST or p in _STOPWORDS:
+            return False
+        if p in _LEAD_IN_WORDS and p not in _LEAD_IN_OK_IN_PHRASE:
+            return False
+        if not _is_usable_token(p):
+            return False
+    return len(parts) >= 2
+
+
+def _phrase_score(phrase: str, count: int) -> float:
+    """Prefer solid multi-word phrases; demote unigrams."""
+    words = phrase.split()
+    n = len(words)
+    content = sum(1 for w in words if _is_usable_token(w))
+    # Prefer longer phrases so UI shows 3–5 word terms when available
+    if n == 5:
+        length_bonus = 2.8
+    elif n == 4:
+        length_bonus = 2.6
+    elif n == 3:
+        length_bonus = 2.4
+    elif n == 2:
+        length_bonus = 2.1
+    else:
+        length_bonus = 0.85
+    content_bonus = 1.0 + 0.12 * max(0, content - 1)
+    char_bonus = 1.0 + min(len(phrase), 28) / 28.0
+    return count * length_bonus * content_bonus * char_bonus
+
+
+def _iter_phrase_spans(text: str) -> list[list[str]]:
+    """
+    Tokenize JD into short spans so skill lists don't become one giant n-gram.
+
+    Splits on newlines, commas, semicolons, and " and " / " or " separators.
+    """
     normalized = normalize_for_matching(text)
-    tokens = [t for t in _tokenize(normalized) if _is_usable_keyword(t)]
-    if not tokens:
+    spans: list[list[str]] = []
+    for raw_line in normalized.splitlines():
+        chunks = re.split(r"[,;/]|(?:\s+and\s+)|(?:\s+or\s+)", raw_line, flags=re.IGNORECASE)
+        for chunk in chunks:
+            toks = [t for t in _tokenize(chunk) if t]
+            if toks:
+                spans.append(toks)
+    return spans
+
+
+def _extract_ngrams_from_span(tokens: list[str], n: int) -> list[str]:
+    """Build n-grams that start/end on content words within one span."""
+    out: list[str] = []
+    if n == 1:
+        for t in tokens:
+            if t in _SHORT_TECH or (_is_usable_token(t) and t not in _WEAK_UNIGRAMS):
+                if _is_usable_keyword(t):
+                    out.append(t)
+        return out
+
+    for i in range(len(tokens) - n + 1):
+        window = tokens[i : i + n]
+        if not _is_usable_token(window[0]) or not _is_usable_token(window[-1]):
+            continue
+        phrase = " ".join(window)
+        if _is_usable_keyword(phrase):
+            out.append(phrase)
+    return out
+
+
+def extract_keywords(text: str, top_n: int = 40) -> list[str]:
+    """
+    Extract important keywords after stripping stock lead-in verbs.
+
+    Prefers 2–5 word phrases (e.g. "test socket designs", "root cause analysis")
+    so matched/missing UI shows real hiring phrases, not lone filler words.
+    Strong unigrams (skills, acronyms) fill remaining slots.
+    """
+    spans = _iter_phrase_spans(text)
+    if not spans:
         return []
 
     freq: dict[str, int] = {}
-    for token in tokens:
-        freq[token] = freq.get(token, 0) + 1
+    for tokens in spans:
+        for n in (5, 4, 3, 2, 1):
+            for gram in _extract_ngrams_from_span(tokens, n):
+                freq[gram] = freq.get(gram, 0) + 1
+
+    if not freq:
+        return []
 
     scored = sorted(
         freq.items(),
-        key=lambda item: (item[1] * (1 + min(len(item[0]), 12) / 12), item[0]),
+        key=lambda item: (_phrase_score(item[0], item[1]), len(item[0].split()), item[0]),
         reverse=True,
     )
-    return [term for term, _ in scored[:top_n]]
+
+    selected: list[str] = []
+    for term, _ in scored:
+        # Skip if this term is a sub-phrase of an already selected longer term
+        if any(term != other and f" {term} " in f" {other} " for other in selected):
+            continue
+        # Skip unigrams already covered by a selected phrase
+        if " " not in term and any(term in other.split() for other in selected):
+            continue
+        selected.append(term)
+        if len(selected) >= top_n:
+            break
+
+    # Drop any leftover shorter phrase fully contained in a longer selected one
+    selected = [
+        t
+        for t in selected
+        if not any(t != o and f" {t} " in f" {o} " for o in selected)
+    ]
+    return selected[:top_n]
+
+
+def _phrase_in_text(phrase: str, text: str) -> bool:
+    """Whole-word match for a multi-word phrase (order preserved)."""
+    parts = [p for p in phrase.lower().split() if p]
+    if not parts:
+        return False
+    escaped = r"[\s\-_/]+".join(re.escape(p) for p in parts)
+    pattern = re.compile(rf"(?i)(?<![a-z0-9]){escaped}(?![a-z0-9])")
+    return bool(pattern.search(text or ""))
+
+
+def _content_tokens(phrase: str) -> list[str]:
+    return [p for p in phrase.lower().split() if _is_usable_token(p)]
+
+
+def _all_content_in_resume(phrase: str, resume_tokens: set[str], resume_text: str) -> bool:
+    """
+    Soft phrase match: every content word appears as a whole word in the resume.
+
+    Lets "django postgresql" match a resume that lists those skills separately,
+    while still avoiding substring false positives via whole-word checks.
+    """
+    content = _content_tokens(phrase)
+    if len(content) < 2:
+        return False
+    for token in content:
+        if token in resume_tokens:
+            continue
+        pattern = re.compile(rf"(?i)(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])")
+        if pattern.search(resume_text or ""):
+            continue
+        # Light plural tolerance
+        if not token.endswith("s") and (token + "s") in resume_tokens:
+            continue
+        if token.endswith("s") and len(token) > 3 and token[:-1] in resume_tokens:
+            continue
+        return False
+    return True
 
 
 def _keyword_in_resume(kw: str, resume_text: str, resume_tokens: set[str]) -> bool:
     """
-    True only if the keyword appears as a real whole word/token in the resume.
+    True only if the keyword appears as a real whole word/phrase in the resume.
 
     Avoids false hits like keyword 'ate' matching inside 'evaluate'/'create',
-    or 'test' matching inside 'latest'.
+    or 'test' matching inside 'latest'. Multi-word phrases match on exact
+    phrase first, then on all content words present (whole-word).
     """
     if not kw:
         return False
+
+    parts = kw.split()
+    if len(parts) > 1:
+        if _phrase_in_text(kw, resume_text):
+            return True
+        # Light plural tolerance on the last word: "test socket" vs "test sockets"
+        last = parts[-1]
+        if not last.endswith("s"):
+            alt = " ".join(parts[:-1] + [last + "s"])
+            if _phrase_in_text(alt, resume_text):
+                return True
+        elif last.endswith("s") and len(last) > 3:
+            alt = " ".join(parts[:-1] + [last[:-1]])
+            if _phrase_in_text(alt, resume_text):
+                return True
+        # Soft match: all content tokens present as whole words
+        if _all_content_in_resume(kw, resume_tokens, resume_text):
+            return True
+        return False
+
     if kw in resume_tokens:
         return True
 
     # Hyphen/slash compounds: "signal-integrity" or token "machine-learning"
     for token in resume_tokens:
         if "-" in token or "/" in token or "." in token:
-            parts = re.split(r"[-/.]", token)
-            if kw in parts:
+            compound_parts = re.split(r"[-/.]", token)
+            if kw in compound_parts:
                 return True
 
-    # Whole-word search in original text (handles plurals lightly via boundary)
+    # Whole-word search in original text
     pattern = re.compile(rf"(?i)(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])")
     if pattern.search(resume_text or ""):
         return True

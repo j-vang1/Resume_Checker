@@ -81,15 +81,52 @@ def test_strips_lead_in_verbs_for_matching():
     - Performed DOE for thermal stability characterization at -40C.
     """
     result = score_resume(job, resume, filename="ate.pdf", threshold=50)
-    assert "socket" in result.matched_keywords or "thermal" in result.matched_keywords
-    assert "plunger" in result.matched_keywords or "doe" in result.matched_keywords
+    matched_blob = " ".join(result.matched_keywords)
+    assert "socket" in matched_blob or "thermal" in matched_blob
+    assert "plunger" in matched_blob or "doe" in matched_blob or "root cause" in matched_blob
     assert result.match_percent >= 40
 
     kws = extract_keywords(job)
     assert "review" not in kws
     assert "demonstrate" not in kws
     assert "provide" not in kws
+    # Prefer multi-word phrases over lone filler words
+    assert any(" " in kw for kw in kws)
+    assert any("root cause" in kw or "test socket" in kw or "thermal" in kw for kw in kws)
 
+
+def test_extract_keywords_prefers_phrases():
+    """Matched/missing should surface 2–5 word phrases, not only unigrams."""
+    job = """
+    Review and approve test socket designs for production handlers.
+    Demonstrate root cause analysis on intermittent ATE failures.
+    Provide thermal plunger hardware characterization using DOE.
+    """
+    kws = extract_keywords(job)
+    assert kws
+    phrase_kws = [kw for kw in kws if " " in kw]
+    assert phrase_kws, f"expected multi-word phrases, got: {kws}"
+    assert all(2 <= len(kw.split()) <= 5 for kw in phrase_kws)
+    blob = " ".join(kws)
+    assert "root cause analysis" in blob or "thermal plunger" in blob
+    # After stripping "Review and approve", keep the noun phrase intact
+    assert "test socket designs" in kws or any("test socket designs" in kw for kw in kws)
+    # Lead-ins must not appear as bare keywords
+    assert "review" not in kws
+    assert "demonstrate" not in kws
+    assert "approve" not in kws
+
+    resume = """
+    Designed test socket designs and thermal plunger hardware for ATE.
+    Performed root cause analysis on intermittent ATE failures.
+    """
+    result = score_resume(job, resume, filename="phrase.pdf", threshold=40)
+    matched_phrases = [kw for kw in result.matched_keywords if " " in kw]
+    assert matched_phrases, f"expected matched phrases, got: {result.matched_keywords}"
+    assert any(
+        "test socket" in kw or "root cause" in kw or "thermal plunger" in kw
+        for kw in result.matched_keywords
+    )
 
 def test_no_false_substring_keyword_matches():
     """'ate' must not match inside 'evaluate'; 'test' must not match 'latest'."""
@@ -139,11 +176,8 @@ def test_strong_resume_greenlit_at_50():
     result = score_resume(JOB_EN, RESUME_STRONG, filename="strong.pdf", threshold=50)
     assert result.match_percent >= 50
     assert result.greenlit is True
-    assert "python" in result.matched_keywords
-    result = score_resume(JOB_EN, RESUME_STRONG, filename="strong.pdf", threshold=50)
-    assert result.match_percent >= 50
-    assert result.greenlit is True
-    assert "python" in result.matched_keywords
+    matched_blob = " ".join(result.matched_keywords)
+    assert "python" in matched_blob
 
 
 def test_weak_resume_rejected_at_50():
@@ -186,7 +220,8 @@ def test_extract_keywords_finds_skills():
     joined = " ".join(keywords)
     assert "python" in joined
     assert "fastapi" in joined or "django" in joined
-
+    # Should include multi-word skill phrases when present in the JD
+    assert any(" " in kw for kw in keywords) or "python" in keywords
 
 def test_docx_parser_roundtrip():
     document = Document()
