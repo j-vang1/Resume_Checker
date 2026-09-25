@@ -23,11 +23,12 @@ streamlit run app.py
 
 ## How matching works
 
-1. Extract keywords from the job description
-2. Measure keyword overlap with each resume
-3. Measure TF-IDF cosine similarity
-4. Combined score (default): `55% × keywords + 45% × similarity`
-5. Greenlight if score ≥ threshold (default 50%)
+1. Strip stock lead-in verbs from JD and resume bullets (`Demonstrate`, `Review`, `Responsible for`, `Led`, … — up to ~5 words)
+2. Extract keywords from the remaining substance of the job description
+3. Measure keyword overlap with each resume
+4. Measure TF-IDF cosine similarity on the stripped text
+5. Combined score (default): `55% × keywords + 45% × similarity`
+6. Greenlight if score ≥ threshold (default 50%)
 
 ## Tests
 
