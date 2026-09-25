@@ -9,7 +9,6 @@ Run with:
 
 from __future__ import annotations
 
-import html
 import sys
 from pathlib import Path
 
@@ -331,57 +330,89 @@ def _filter_sort_reports(
     return out
 
 
-def _screening_table_html(reports: list[MatchReport]) -> str:
-    rows_html: list[str] = []
+def _board_records(reports: list[MatchReport]) -> list[dict]:
+    """Compact rows for the screening dataframe."""
+    rows = []
     for i, r in enumerate(reports, 1):
         tier = _fit_tier(r)
-        fit = _fit_label(tier)
-        status = "GREENLIT" if r.greenlit else "BELOW"
-        width = max(0, min(100, int(round(r.composite_score))))
-        signal = html.escape(_short(_top_signal(r), 64))
-        name = html.escape(_short(r.filename, 42))
-        core = html.escape(str(r.overall.get("core_requirement_coverage", "—")))
-        depth = html.escape(str(r.overall.get("technical_depth", "—")))
-        rows_html.append(
-            f"""
-            <tr class="fit-{tier}">
-              <td>{i}</td>
-              <td><span class="fit-badge {tier}">{fit}</span></td>
-              <td class="score-cell">{r.composite_score:.0f}
-                <span class="bar {tier}"><span style="width:{width}%"></span></span>
-              </td>
-              <td class="name-cell">{name}</td>
-              <td>{status}</td>
-              <td>{core}</td>
-              <td>{depth}</td>
-              <td class="muted">{signal}</td>
-            </tr>
-            """
+        marker = {"good": "✅", "maybe": "🟡", "poor": "🔴"}.get(tier, "🔴")
+        rows.append(
+            {
+                "#": i,
+                "Fit": f"{marker} {_fit_label(tier)}",
+                "Score": float(round(r.composite_score, 1)),
+                "Candidate": r.filename,
+                "Gate": "GREENLIT" if r.greenlit else "BELOW",
+                "Core": r.overall.get("core_requirement_coverage", "—"),
+                "Depth": r.overall.get("technical_depth", "—"),
+                "Impact": r.overall.get("demonstrated_impact", "—"),
+                "Top signal": _top_signal(r),
+                "_tier": tier,
+            }
         )
-    body = "\n".join(rows_html) or (
-        '<tr><td colspan="8" class="muted">No candidates in this view.</td></tr>'
-    )
-    return f"""
-    <div class="screen-wrap">
-      <table class="screen-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Fit</th>
-            <th>Score</th>
-            <th>Candidate</th>
-            <th>Gate</th>
-            <th>Core</th>
-            <th>Depth</th>
-            <th>Top signal</th>
-          </tr>
-        </thead>
-        <tbody>
-          {body}
-        </tbody>
-      </table>
-    </div>
-    """
+    return rows
+
+
+def _show_screening_board(reports: list[MatchReport]) -> None:
+    """Native Streamlit table — no custom HTML (avoids raw-code rendering bugs)."""
+    if not reports:
+        st.caption("No candidates in this view.")
+        return
+
+    rows = _board_records(reports)
+    # Drop internal helper column from display
+    display_rows = [{k: v for k, v in row.items() if not k.startswith("_")} for row in rows]
+
+    try:
+        import pandas as pd
+
+        df = pd.DataFrame(display_rows)
+
+        def _row_style(row):
+            tier = rows[row.name]["_tier"]
+            colors = {
+                "good": "background-color: #dcfce7; color: #14532d",
+                "maybe": "background-color: #fef9c3; color: #713f12",
+                "poor": "background-color: #fee2e2; color: #7f1d1d",
+            }
+            style = colors.get(tier, "")
+            return [style] * len(row)
+
+        styled = df.style.apply(_row_style, axis=1)
+        st.dataframe(
+            styled,
+            use_container_width=True,
+            hide_index=True,
+            height=min(560, 48 + 36 * max(len(df), 3)),
+            column_config={
+                "Score": st.column_config.ProgressColumn(
+                    "Score",
+                    min_value=0,
+                    max_value=100,
+                    format="%.0f",
+                    width="small",
+                ),
+                "Fit": st.column_config.TextColumn("Fit", width="medium"),
+                "Candidate": st.column_config.TextColumn("Candidate", width="large"),
+                "Top signal": st.column_config.TextColumn("Top signal", width="large"),
+                "#": st.column_config.NumberColumn("#", width="small"),
+            },
+        )
+    except Exception:  # noqa: BLE001 — fallback without pandas styling
+        st.dataframe(
+            display_rows,
+            use_container_width=True,
+            hide_index=True,
+            height=min(560, 48 + 36 * max(len(display_rows), 3)),
+            column_config={
+                "Score": st.column_config.ProgressColumn(
+                    "Score",
+                    min_value=0,
+                    max_value=100,
+                    format="%.0f",
+                ),
+            },
+        )
 
 
 def _board_csv(reports: list[MatchReport]) -> str:
@@ -565,32 +596,11 @@ def _render_results(reports: list[MatchReport]) -> None:
     poor = [r for r in reports if _fit_tier(r) == "poor"]
     greenlit_n = sum(1 for r in reports if r.greenlit)
 
-    st.markdown(
-        f"""
-        <div class="tier-row">
-          <div class="tier-card good">
-            <div class="label">Good fit</div>
-            <div class="count">{len(good)}</div>
-            <div class="hint">Strong match — prioritize first</div>
-          </div>
-          <div class="tier-card maybe">
-            <div class="label">Moderate</div>
-            <div class="count">{len(maybe)}</div>
-            <div class="hint">Partial match — review carefully</div>
-          </div>
-          <div class="tier-card poor">
-            <div class="label">Poor fit</div>
-            <div class="count">{len(poor)}</div>
-            <div class="hint">Weak evidence — likely pass</div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.caption(
-        f"{len(reports)} resumes analyzed · {greenlit_n} greenlit at current threshold · "
-        "Row color = fit tier (green / yellow / red)"
-    )
+    t1, t2, t3, t4 = st.columns(4)
+    t1.metric("✅ Good fit", len(good), help="Strong match — prioritize first")
+    t2.metric("🟡 Moderate", len(maybe), help="Partial match — review carefully")
+    t3.metric("🔴 Poor fit", len(poor), help="Weak evidence — likely pass")
+    t4.metric("Greenlit", greenlit_n, help=f"Of {len(reports)} resumes analyzed")
 
     st.markdown("### Screening board")
     c1, c2, c3, c4 = st.columns([1.2, 1.1, 1.1, 1.4])
@@ -635,7 +645,10 @@ def _render_results(reports: list[MatchReport]) -> None:
 
     left_meta, right_meta = st.columns([2, 1])
     with left_meta:
-        st.caption(f"Showing {len(filtered)} of {len(reports)} candidates")
+        st.caption(
+            f"Showing {len(filtered)} of {len(reports)} · "
+            "Green rows = good · Yellow = moderate · Red = poor"
+        )
     with right_meta:
         st.download_button(
             "Download board CSV",
@@ -649,35 +662,30 @@ def _render_results(reports: list[MatchReport]) -> None:
         st.warning("No candidates match the current filters.")
         return
 
-    # Grouped quick lists for glanceable triage at 100-resume scale
     view_mode = st.radio(
         "Board layout",
-        ["Color board (all)", "Grouped by fit"],
+        ["All candidates", "Grouped by fit"],
         horizontal=True,
         index=0,
     )
 
     if view_mode == "Grouped by fit":
         groups = [
-            ("Good fit — review first", "good", [r for r in filtered if _fit_tier(r) == "good"]),
-            ("Moderate — needs judgment", "maybe", [r for r in filtered if _fit_tier(r) == "maybe"]),
-            ("Poor fit — likely pass", "poor", [r for r in filtered if _fit_tier(r) == "poor"]),
+            ("✅ Good fit — review first", "good", [r for r in filtered if _fit_tier(r) == "good"]),
+            ("🟡 Moderate — needs judgment", "maybe", [r for r in filtered if _fit_tier(r) == "maybe"]),
+            ("🔴 Poor fit — likely pass", "poor", [r for r in filtered if _fit_tier(r) == "poor"]),
         ]
-        for title, _tier, group in groups:
-            with st.expander(f"{title} ({len(group)})", expanded=bool(group) and _tier != "poor"):
-                if not group:
-                    st.caption("None in this tier.")
-                else:
-                    st.markdown(_screening_table_html(group), unsafe_allow_html=True)
+        for title, tier, group in groups:
+            with st.expander(f"{title} ({len(group)})", expanded=bool(group) and tier != "poor"):
+                _show_screening_board(group)
     else:
-        st.markdown(_screening_table_html(filtered), unsafe_allow_html=True)
+        _show_screening_board(filtered)
 
     st.markdown("### Open one candidate")
     options = [
         f"{_fit_label(_fit_tier(r))} · {r.composite_score:.0f} · {r.filename}"
         for r in filtered
     ]
-    # Default to first good fit if present
     default_idx = 0
     for i, r in enumerate(filtered):
         if _fit_tier(r) == "good":
@@ -701,7 +709,7 @@ def main() -> None:
 
     st.title("Resume Checker")
     st.caption(
-        "Evidence-based job-fit analysis — compare candidates clearly, then drill into evidence."
+        "Screen 100 resumes at a glance: green = good fit, yellow = moderate, red = poor fit."
     )
 
     with st.sidebar:
