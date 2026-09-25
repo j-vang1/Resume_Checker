@@ -81,6 +81,40 @@ def test_jd_parser_weights_core_and_skips_generic():
     assert validation.related_concepts
 
 
+def test_unrelated_bullets_are_not_strong_evidence():
+    """Shared verbs like 'review'/'investigate' must not fake hardware evidence."""
+    job = """
+    Responsibilities:
+    - Review and approve the design of test socket, thermal plunger, and ATE/SLT accessories
+    - Apply strong hardware troubleshooting and root-cause analysis
+    - Experience with socket signal integrity
+    """
+    resume = """
+    Sam Recruiter
+    sam@example.com
+
+    Experience
+    Talent Sourcer — 2020 - 2023
+    - Review resumes, conduct screens, and evaluate candidates' qualifications to determine fit.
+    - Perform agricultural surveillance, investigate pesticide related complaints and review reports.
+    - Researched and documented appropriate hardware to build the system.
+    """
+    report = analyze_resume(job, resume, filename="unrelated.pdf", threshold=50)
+    # Should not greenlight a recruiter/ag resume for ATE hardware role
+    assert report.greenlit is False
+    assert report.overall["overall_role_alignment"] in {"Weak", "Moderate"}
+    for node in report.evidence_graph:
+        bullets = " ".join(e["bullet"].lower() for e in node["evidence"])
+        if "resume" in bullets or "agricultural" in bullets or "pesticide" in bullets:
+            assert node["strength"] in {"No Evidence", "Weak Evidence"}
+        # No Strong/Very Strong on junk evidence
+        if node["evidence"]:
+            for ev in node["evidence"]:
+                assert "agricultural" not in ev["bullet"].lower()
+                assert "pesticide" not in ev["bullet"].lower()
+                assert "review resumes" not in ev["bullet"].lower()
+
+
 def test_semantic_credit_without_exact_phrase():
     """RCA credited from 'investigated intermittent...isolated' without saying 'root cause analysis'."""
     resume = parse_resume(RESUME_STRONG)
